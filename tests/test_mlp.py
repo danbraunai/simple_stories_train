@@ -1,8 +1,8 @@
 import pytest
 from torch import nn
 
-from mypkg.models import MLP
-from mypkg.models.mlp import Layer
+from simple_stories_train.models import MLP
+from simple_stories_train.models.mlp import Layer
 
 
 @pytest.mark.parametrize(
