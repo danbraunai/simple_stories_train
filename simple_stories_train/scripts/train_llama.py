@@ -41,15 +41,18 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 """
 
+import argparse
 import glob
 import inspect
 import math
 import os
 import struct
+import time
 from contextlib import nullcontext
 from dataclasses import dataclass
 
 import numpy as np
+import tiktoken
 import torch
 import torch._inductor.config as config
 import torch.distributed as dist
@@ -92,13 +95,15 @@ class CausalSelfAttention(nn.Module):
 
         if self.use_grouped_query_attention:
             self.repeat_kv_heads = config.n_head // config.n_key_value_heads
-            self.kv_attn = nn.Linear(config.n_embd, 2 * config.n_embd // self.repeat_kv_heads)
-            self.q_attn = nn.Linear(config.n_embd, config.n_embd)
+            self.kv_attn = nn.Linear(
+                config.n_embd, 2 * config.n_embd // self.repeat_kv_heads, bias=config.attn_bias
+            )
+            self.q_attn = nn.Linear(config.n_embd, config.n_embd, bias=config.attn_bias)
         else:
-            self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd)
+            self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, bias=config.attn_bias)
 
         # output projection
-        self.c_proj = nn.Linear(config.n_embd, config.n_embd)
+        self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=config.attn_bias)
         self.c_proj.LLMC_RESIDUAL_SCALE_FLAG = 1
         # regularization
         self.n_head = config.n_head
@@ -778,11 +783,6 @@ def print0(*args, **kwargs):
 
 
 if __name__ == "__main__":
-    import argparse
-    import time
-
-    import tiktoken
-
     print0(f"Running pytorch {torch.version.__version__}")
 
     # default settings will overfit a tiny batch of data
@@ -1029,33 +1029,6 @@ if __name__ == "__main__":
     if args.input_val_bin:
         val_loader = DistributedDataLoader(args.input_val_bin, B, T, ddp_rank, ddp_world_size)
 
-    # -------------------------------------------------------------------------
-    # PyTorch -> C bridge: save some weights and state for C to load later as reference
-
-    # do one forward pass to generate ground truth for our C tests
-    if master_process and args.write_tensors and (not args.inference_only):
-        x, y = train_loader.next_batch()
-        x, y = x.to(device), y.to(device)
-        logits, loss = model(x, y)
-        loss.backward()
-        # save model params, in both float32 and bfloat16
-        model_to_size = {
-            "gpt2": "124M",
-            "gpt2-medium": "355M",
-            "gpt2-large": "774M",
-            "gpt2-xl": "1558M",
-        }
-        model_to_size.update({f"d{d}": f"d{d}" for d in [2, 12, 24, 36, 48]})
-        model_size_str = model_to_size[args.model]  # e.g. "124M", or "d12"
-        write_model(model, f"gpt2_{model_size_str}.bin", dtype="float32")
-        write_model(model, f"gpt2_{model_size_str}_bf16.bin", dtype="bfloat16")
-        # save x, y, logits, loss, and parameter gradients, for debugging C
-        # always store these in fp32 to have an accurate reference (?)
-        write_state(model, x, y, logits, loss, f"gpt2_{model_size_str}_debug_state.bin")
-        # reset the train_loader for the optimization below
-        train_loader.reset()
-
-    # -------------------------------------------------------------------------
     # main training loop
 
     # here we wrap model into DDP container
