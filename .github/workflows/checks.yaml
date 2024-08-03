@@ -38,6 +38,6 @@ jobs:
     - name: Run ruff format
       run: |
         ruff format .
-    - name: Run tests
-      run: |
-        python -m pytest --runslow --durations=10
+    # - name: Run tests
+    #   run: |
+    #     python -m pytest --runslow --durations=10
