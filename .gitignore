@@ -1,4 +1,6 @@
-simple_stories_train/scripts/tinyshakespeare/
+tinyshakespeare/
+gpt2_tokenizer.bin
+
 .vscode/settings.json
 
 wandb/
