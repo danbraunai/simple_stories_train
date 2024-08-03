@@ -1,8 +1,7 @@
 # type: ignore
 # TODO: add type hints
 """
-Reference code for GPT-2 training and inference.
-Will save the model weights into files, to be read from C as initialization.
+Training code for use with the SimpleStories dataset and model suite.
 
 References:
 1) the official GPT-2 TensorFlow implementation released by OpenAI:
@@ -16,6 +15,30 @@ python train_gpt2.py --write_tensors=0 --num_iterations=50 --sequence_length=102
 you can also turn on flash-attention by appending --flash=1
 4 GPU:
 torchrun --standalone --nproc_per_node=4 train_gpt2.py --write_tensors=0 --num_iterations=50 --sequence_length=1024 --compile=1 --tensorcores=1 --dtype=bfloat16
+
+This implementation is based on
+- llm.c,           licensed under MIT ((c) 2024 Andrei Karpathy) and
+- TransformerLens, licensed under MIT ((c) 2022 TransformerLensOrg).
+
+
+MIT License:
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 """
 
 import glob
@@ -35,9 +58,6 @@ from torch.distributed import destroy_process_group, init_process_group
 from torch.distributed.optim import ZeroRedundancyOptimizer
 from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
-
-# -----------------------------------------------------------------------------
-# PyTorch nn.Module definitions for the GPT-2 model
 
 # using a global to toggle flash-attention
 FLASH = 0
