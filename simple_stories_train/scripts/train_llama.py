@@ -1,4 +1,3 @@
-# TODO: add type hints
 """
 Reference code for GPT-2 training and inference.
 Will save the model weights into files, to be read from C as initialization.
@@ -24,7 +23,8 @@ import os
 import struct
 from contextlib import nullcontext
 from dataclasses import dataclass
-from typing import Any, TextIO
+from io import BufferedWriter
+from typing import Any
 
 import numpy as np
 import tiktoken
@@ -53,16 +53,16 @@ class LlamaConfig:
     n_head: int = 12
     n_embd: int = 768
     n_intermediate: int = 768 * 4 * 2 // 3  # SwiGLU has 2/3 of the hidden size
-    mlp_bias: bool = False
-    attn_bias: bool = False
-    rotary_adjacent_pairs: bool = False
+    mlp_bias = False
+    attn_bias = False
+    rotary_adjacent_pairs = False
     rotary_dim: int = 768 // 12  # i.e. same as d_head
     rotary_base: int = 10000
     n_ctx: int = 1024
     n_key_value_heads: int = (
         12 // 4
     )  # Note that llama 3.1 n_key_value_heads does not scale with n_heads
-    use_grouped_query_attention: bool = True
+    use_grouped_query_attention = True
 
 
 class CausalSelfAttention(nn.Module):
@@ -81,7 +81,7 @@ class CausalSelfAttention(nn.Module):
 
         # output projection
         self.c_proj = nn.Linear(config.n_embd, config.n_embd)
-        self.c_proj.LLMC_RESIDUAL_SCALE_FLAG = 1
+        self.LLMC_RESIDUAL_SCALE_FLAG = 1
         # regularization
         self.n_head = config.n_head
         self.n_embd = config.n_embd
@@ -130,9 +130,10 @@ class CausalSelfAttention(nn.Module):
         return torch.sin(angles).to(dtype), torch.cos(angles).to(dtype)
 
     def get_offset_position_ids(
+        self,
         past_kv_pos_offset: int,
-        attention_mask: torch.Tensor,
-    ) -> torch.Tensor:
+        attention_mask: Int[torch.Tensor, "batch offset_pos"],
+    ) -> Float[torch.Tensor, "pos batch"]:
         """
         Returns the indices of non-padded tokens, offset by the position of the first attended token.
         """
@@ -303,7 +304,7 @@ class Llama(nn.Module):
             )
         )
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
-        self.lm_head.LLMC_SKIP_INIT = 1  # don't init this one, we will tie weights
+        self.LLMC_SKIP_INIT = 1  # don't init this one, we will tie weights
         self.transformer.wte.weight = (
             self.lm_head.weight
         )  # https://paperswithcode.com/method/weight-tying
@@ -313,17 +314,17 @@ class Llama(nn.Module):
         self.init_rng.manual_seed(42)
         self.apply(self._init_weights)
 
-    def _init_weights(self, module: nn.Linear | nn.Embedding):
+    def _init_weights(self, module: nn.Module):
         if isinstance(module, nn.Linear):
             # apply special scaled init to the residual projections, per GPT-2 paper
             std = (
                 0.02
-                if not hasattr(module, "LLMC_RESIDUAL_SCALE_FLAG")
+                if not hasattr(self, "LLMC_RESIDUAL_SCALE_FLAG")
                 else 0.02 / math.sqrt(2 * self.config.n_layer)
             )
             # we want to skip initializing lm_head, which shares parameters with wte
             # and wte was already initialized down below during the Embedding init
-            if not hasattr(module, "LLMC_SKIP_INIT"):
+            if not hasattr(self, "LLMC_SKIP_INIT"):
                 torch.nn.init.normal_(module.weight, mean=0.0, std=std, generator=self.init_rng)
             if module.bias is not None:  # type: ignore
                 torch.nn.init.zeros_(module.bias)
@@ -378,10 +379,19 @@ class Llama(nn.Module):
 
         # n_layer, n_head and n_embd are determined from model_type
         config_args = {
-            "gpt2": dict(n_layer=12, n_head=12, n_embd=768),  # 124M params
-            "gpt2-medium": dict(n_layer=24, n_head=16, n_embd=1024),  # 350M params
-            "gpt2-large": dict(n_layer=36, n_head=20, n_embd=1280),  # 774M params
-            "gpt2-xl": dict(n_layer=48, n_head=25, n_embd=1600),  # 1558M params
+            "d2": dict(
+                block_size=1024,
+                vocab_size=50257,
+                n_layer=2,
+                n_head=2,
+                n_embd=12,
+                rotary_dim=12 // 2,
+                n_key_value_heads=2 // 2,
+                attn_bias=False,
+                mlp_bias=False,
+                rotary_adjacent_pairs=False,
+                use_grouped_query_attention=True,
+            )
         }[model_type]
         config_args["vocab_size"] = 50257  # always 50257 for GPT model checkpoints
         config_args["block_size"] = 1024  # always 1024 for GPT model checkpoints
@@ -435,7 +445,7 @@ class Llama(nn.Module):
         self,
         weight_decay: float,
         learning_rate: float,
-        betas: tuple[float],
+        betas: tuple[float, float],
         device_type: str,
         zero_stage: int,
     ):
@@ -465,8 +475,9 @@ class Llama(nn.Module):
         print0(f"using fused AdamW: {use_fused}")
         if zero_stage == 1:
             print0("using ZeroRedundancyOptimizer")
+            optim_group = optim_groups[0]
             optimizer = ZeroRedundancyOptimizer(
-                **optim_groups[0],
+                **optim_group,  # type: ignore[reportArgumentType]
                 optimizer_class=torch.optim.AdamW,
                 lr=learning_rate,
                 betas=betas,
@@ -576,7 +587,7 @@ class DistributedDataLoader:
         print0(f"DataLoader: total number of tokens: {ntok_total:,} across {len(self.files)} files")
 
         # kick things off
-        self.current_shard = None
+        self.current_shard = -1
         self.reset()
 
     def reset(self):
@@ -611,13 +622,13 @@ class DistributedDataLoader:
 # Python -> C bridge utilities for saving params/grads/activations to .bin files
 
 
-def write_fp32(tensor: torch.Tensor, file: TextIO):
+def write_fp32(tensor: torch.Tensor, file: BufferedWriter):
     t = tensor.detach().cpu().to(torch.float32)
     b = t.numpy().tobytes()
     file.write(b)
 
 
-def write_bf16(tensor: torch.Tensor, file: TextIO):
+def write_bf16(tensor: torch.Tensor, file: BufferedWriter):
     t = tensor.detach().cpu().to(torch.bfloat16)
     # numpy doesn't have bf16 datatype so we have to trick it
     t = t.view(torch.int16)  # trick: reinterpret as int16
@@ -628,7 +639,7 @@ def write_bf16(tensor: torch.Tensor, file: TextIO):
 def write_tensors(
     model_tensors: dict[str, torch.Tensor],
     L: int,
-    file: TextIO,
+    file: BufferedWriter,
     dtype: str,
     mlp_bias=False,
     attn_bias=False,
@@ -693,7 +704,7 @@ def pad_vocab(tensor: torch.Tensor, multiple=128, value=0):
     return padded
 
 
-def write_model(model: Llama, filename: str, dtype: str):
+def write_model(model: nn.Module | Llama, filename: str, dtype: str):
     # everything we need to instantiate the model
     # 1) header is: version int, GPTConfig ints, padding to 1024 bytes
     assert dtype in {"float32", "bfloat16"}  # float16 todo maybe later
@@ -725,7 +736,7 @@ def write_model(model: Llama, filename: str, dtype: str):
 
 
 def write_state(
-    model: Llama,
+    model: nn.Module | Llama,
     x: torch.Tensor,
     y: torch.Tensor,
     logits: torch.Tensor,
@@ -742,7 +753,8 @@ def write_state(
     header[3] = x.size(1)  # temporal extent of the batch, T
     grads = {}
     for name, param in model.named_parameters():
-        grads[name] = param.grad.cpu()
+        if param.grad != None:
+            grads[name] = param.grad.cpu()
     # pad the vocab grads here as well, to mirror write_model
     wte_grad = grads["transformer.wte.weight"]  # (V, C)
     wte_grad_padded = pad_vocab(wte_grad, value=0)  # (Vp, C) # TODO later maybe pad with nan?
@@ -1034,7 +1046,7 @@ if __name__ == "__main__":
         if hasattr(config, "coordinate_descent_tuning"):
             config.coordinate_descent_tuning = True  # suggested by @Chillee
         print0("compiling the model...")
-        model: torch.nn.Module = torch.compile(model)
+        model: nn.Module = torch.compile(model)  # type: ignore[reportArgumentType]
 
     # -------------------------------------------------------------------------
     # Our own version of a simple DistributedDataLoader
@@ -1076,8 +1088,8 @@ if __name__ == "__main__":
 
     # here we wrap model into DDP container
     if ddp:
-        model: torch.nn.Module = DDP(model, device_ids=[ddp_local_rank])
-    raw_model: Llama = model.module if ddp else model  # always contains the "raw" unwrapped model
+        model: nn.Module = DDP(model, device_ids=[ddp_local_rank])
+    raw_model = model.module if ddp else model  # always contains the "raw" unwrapped model
 
     # init the optimizer
     optimizer = raw_model.configure_optimizers(
@@ -1171,7 +1183,9 @@ if __name__ == "__main__":
         if args.overfit_single_batch:
             train_loader.reset()
         # micro-batch loop where we do gradient accumulation to reach desired total batch size
-        lossf = 0.0  # for getting the mean loss (as simple float) over the accumulation steps
+        lossf = torch.Tensor(
+            [0.0]
+        )  # for getting the mean loss (as simple float) over the accumulation steps
         for micro_step in range(grad_accum_steps):
             # fetch a batch
             x, y = train_loader.next_batch()
