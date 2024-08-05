@@ -811,7 +811,7 @@ if __name__ == "__main__":
     import argparse
     import time
 
-    print0(f"Running pytorch {torch.version.__version__}")
+    print0(f"Running pytorch {torch.__version__}")
 
     # default settings will overfit a tiny batch of data
     # and save model weights and debug state to disk on the first iteration
@@ -962,7 +962,7 @@ if __name__ == "__main__":
         args.dtype
     ]
     ctx = (
-        torch.amp.autocast(device_type=device_type, dtype=ptdtype)
+        torch.amp.autocast(device_type=device_type, dtype=ptdtype)  # type: ignore
         if device_type == "cuda"
         else nullcontext()
     )
@@ -982,7 +982,7 @@ if __name__ == "__main__":
     FLASH = args.flash  # type: ignore
 
     # init (and write) the tokenizer
-    enc = tiktoken.get_encoding("gpt2")
+    enc: tiktoken.core.Encoding = tiktoken.get_encoding("gpt2")
     if master_process and args.write_tensors:  # tokenizer is technically not tensors but ok
         write_tokenizer(enc, "gpt2_tokenizer.bin")
 
