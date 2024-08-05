@@ -32,6 +32,7 @@ import torch
 import torch._inductor.config as config
 import torch.distributed as dist
 import torch.nn as nn
+from jaxtyping import Float, Int
 from torch.distributed import destroy_process_group, init_process_group
 from torch.distributed.optim import ZeroRedundancyOptimizer
 from torch.nn import functional as F
@@ -165,10 +166,10 @@ class CausalSelfAttention(nn.Module):
 
     def apply_rotary(
         self,
-        x: torch.Tensor,
+        x: Float[torch.Tensor, "batch head pos head_size"],
         past_kv_pos_offset=0,
-        attention_mask: None | torch.Tensor = None,
-    ) -> torch.Tensor:
+        attention_mask: None | Int[torch.Tensor, "batch offset_pos"] = None,
+    ) -> Float[torch.Tensor, "batch head pos head_size"]:
         # Only apply rotary to first rotary_dim dimensions (eg, if rotary_dim=64 and d_head=256, only apply to first 1/4 of dimensions)
         x = x.permute(
             0, 2, 1, 3
@@ -195,7 +196,11 @@ class CausalSelfAttention(nn.Module):
         out = torch.cat([x_rotated, x_pass], dim=-1)
         return out.permute(0, 2, 1, 3)
 
-    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None) -> torch.Tensor:
+    def forward(
+        self,
+        x: Float[torch.Tensor, "batch pos d_model"],
+        attention_mask: Int[torch.Tensor, "batch offset_pos"] | None = None,
+    ) -> Float[torch.Tensor, "batch pos d_model"]:
         B, T, C = x.size()  # batch size, sequence length, embedding dimensionality (n_embd)
 
         if self.use_grouped_query_attention:
@@ -277,7 +282,9 @@ class Block(nn.Module):
         self.rms_2 = LlamaRMSNorm(config.n_embd)
         self.mlp = SwiGLUMLP(config)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, x: Float[torch.Tensor, "batch pos d_model"]
+    ) -> Float[torch.Tensor, "batch pos d_model"]:
         x = x + self.attn(self.rms_1(x))
         x = x + self.mlp(self.rms_2(x))
         return x
@@ -323,7 +330,12 @@ class Llama(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02, generator=self.init_rng)
 
-    def forward(self, idx: torch.Tensor, targets: None | torch.Tensor = None, return_logits=True):
+    def forward(
+        self,
+        idx: Float[torch.Tensor, "batch pos"],
+        targets: None | Float[torch.Tensor, "batch pos vocab"] = None,
+        return_logits=True,
+    ):
         device = idx.device
         b, t = idx.size()
         assert (
@@ -470,8 +482,12 @@ class Llama(nn.Module):
 
     @torch.no_grad()
     def generate(
-        self, idx: torch.Tensor, max_new_tokens: int, temperature=1.0, top_k: None | int = None
-    ) -> torch.Tensor:
+        self,
+        idx: Float[torch.Tensor, "batch pos"],
+        max_new_tokens: int,
+        temperature=1.0,
+        top_k: None | int = None,
+    ) -> Float[torch.Tensor, "batch pos"]:
         """
         Take a conditioning sequence of indices idx (LongTensor of shape (b,t)) and complete
         the sequence max_new_tokens times, feeding the predictions back into the model each time.
