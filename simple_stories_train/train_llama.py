@@ -56,6 +56,7 @@ import torch
 import torch._inductor.config as config
 import torch.distributed as dist
 import torch.nn as nn
+import wandb
 from torch.distributed import destroy_process_group, init_process_group
 from torch.distributed.optim import ZeroRedundancyOptimizer
 from torch.nn import functional as F
@@ -852,7 +853,6 @@ if __name__ == "__main__":
 
     # -------------------------------------------------------------------------
     # Our own version of a simple DistributedDataLoader
-
     # load tokens
     train_loader = DistributedDataLoader(args.input_bin, B, T, ddp_rank, ddp_world_size)
     val_loader = None
@@ -921,11 +921,12 @@ if __name__ == "__main__":
                     _, loss = model(x, y, return_logits=False)
                     val_loss += loss.item()
                 val_loss /= args.val_max_steps
-            # log to console and to file
+            # log to console, file, and wandb
             print0(f"val loss {val_loss}")
             if master_process and logfile is not None:
                 with open(logfile, "a") as f:
                     f.write("s:%d tel:%f\n" % (step, val_loss))
+            wandb.log({"val_loss": val_loss, "step": step})
 
         # once in a while perform model inference on the master process
         if (
@@ -1010,6 +1011,16 @@ if __name__ == "__main__":
             with open(logfile, "a") as f:
                 f.write("s:%d trl:%f\n" % (step, lossf))
 
+        wandb.log(
+            {
+                "train_loss": lossf,
+                "learning_rate": lr,
+                "grad_norm": norm,
+                "step": step,
+                "tokens_per_second": tokens_per_second,
+            }
+        )
+
         # keep track of smooth timings, last 20 iterations
         if step > 0 and step > args.num_iterations - 20:
             timings.append(t1 - t0)
@@ -1023,3 +1034,4 @@ if __name__ == "__main__":
     # clean up nice
     if ddp:
         destroy_process_group()
+    wandb.finish()
