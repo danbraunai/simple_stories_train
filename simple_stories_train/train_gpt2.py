@@ -46,6 +46,7 @@ import os
 import struct
 from contextlib import nullcontext
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -56,6 +57,8 @@ from torch.distributed import destroy_process_group, init_process_group
 from torch.distributed.optim import ZeroRedundancyOptimizer
 from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
+
+from utils import save_model_and_config, print0, is_checkpoint_step
 
 # -----------------------------------------------------------------------------
 # PyTorch nn.Module definitions for the GPT-2 model
@@ -625,14 +628,6 @@ def write_tokenizer(enc, filename):
 # -----------------------------------------------------------------------------s
 # int main
 
-
-def print0(*args, **kwargs):
-    # modified print that only prints from the master process
-    # if this is not a distributed run, it's just a print
-    if int(os.environ.get("RANK", 0)) == 0:
-        print(*args, **kwargs)
-
-
 if __name__ == "__main__":
     import argparse
     import time
@@ -903,12 +898,18 @@ if __name__ == "__main__":
 
     # create the logging directory if it does not exist
     logfile = None
+    checkpoints_dir = None
     if args.output_dir:
         os.makedirs(args.output_dir, exist_ok=True)
         logfile = os.path.join(args.output_dir, "main.log")
         # create the log file "main.log" inside it, and wipe it clean
         with open(logfile, "w") as f:
             pass
+
+        # set our checkpoints directory and save off the initilized model
+        checkpoints_dir = Path(args.output_dir) / 'checkpoints'
+        os.makedirs(checkpoints_dir, exist_ok=True)
+        save_model_and_config(checkpoints_dir, raw_model, step=0)
 
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()
@@ -1020,6 +1021,10 @@ if __name__ == "__main__":
         if master_process and logfile is not None:
             with open(logfile, "a") as f:
                 f.write("s:%d trl:%f\n" % (step, lossf))
+
+        if checkpoints_dir is not None and is_checkpoint_step(step + 1):
+            # save checkpoint
+            save_model_and_config(checkpoints_dir, raw_model, step=step + 1)
 
         # keep track of smooth timings, last 20 iterations
         if step > 0 and step > args.num_iterations - 20:
