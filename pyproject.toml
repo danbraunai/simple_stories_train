@@ -13,6 +13,9 @@ dependencies = [
     "tqdm",
     "pytest",
     "ipykernel",
+    "jaxtyping",
+    "tiktoken",
+    "transformers"
 ]
 
 [project.optional-dependencies]
