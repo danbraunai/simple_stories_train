@@ -5,15 +5,18 @@ import torch
 from torch import nn
 from typing import Any
 
-def print0(*args: Any, **kwargs: Any):
+def print0(*args: Any, **kwargs: Any) -> None:
     # modified print that only prints from the master process
     # if this is not a distributed run, it's just a print
     if int(os.environ.get("RANK", 0)) == 0:
         print(*args, **kwargs)
 
 
-def is_checkpoint_step(step: int):
-    return (0 < step < 1000 and (step & (step - 1)) == 0) or step % 1000 == 0
+def is_checkpoint_step(step: int) -> bool:
+    # step & (step + 1) == 0 iff step + 1 is a power of 2. Therefore, the following
+    # expression will be true iff step is one less than a power of two between 0
+    # and 1000 or if step + 1 is a multiple of 1000.
+    return (0 <= step < 1000 and (step & (step + 1)) == 0) or (step + 1) % 1000 == 0
 
 
 def save_model_and_config(save_dir: Path, model: nn.Module, step: int) -> None:

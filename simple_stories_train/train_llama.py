@@ -62,7 +62,7 @@ from torch.distributed.optim import ZeroRedundancyOptimizer
 from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from utils import save_model_and_config, print0, is_checkpoint_step
+from simple_stories_train.utils import save_model_and_config, print0, is_checkpoint_step
 
 # using a global to toggle flash-attention
 FLASH = 0
@@ -889,16 +889,18 @@ if __name__ == "__main__":
     # create the logging directory if it does not exist
     logfile = None
     checkpoints_dir = None
+    output_dir = None
     if args.output_dir:
-        os.makedirs(args.output_dir, exist_ok=True)
-        logfile = os.path.join(args.output_dir, "main.log")
+        output_dir = Path(args.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        logfile = output_dir / "main.log"
         # create the log file "main.log" inside it, and wipe it clean
         with open(logfile, "w") as f:
             pass
 
         # set our checkpoints directory and save off the initilized model
-        checkpoints_dir = Path(args.output_dir) / 'checkpoints'
-        os.makedirs(checkpoints_dir, exist_ok=True)
+        checkpoints_dir = output_dir / 'checkpoints'
+        checkpoints_dir.mkdir(parents=True, exist_ok=True)
         save_model_and_config(checkpoints_dir, raw_model, step=0)
 
     if device == "cuda":
@@ -1012,9 +1014,8 @@ if __name__ == "__main__":
             with open(logfile, "a") as f:
                 f.write("s:%d trl:%f\n" % (step, lossf))
 
-        if checkpoints_dir is not None and is_checkpoint_step(step + 1):
-            # save checkpoint
-            save_model_and_config(checkpoints_dir, raw_model, step=step + 1)
+        if checkpoints_dir is not None and is_checkpoint_step(step):
+            save_model_and_config(checkpoints_dir, raw_model, step=step+1)
 
         # keep track of smooth timings, last 20 iterations
         if step > 0 and step > args.num_iterations - 20:
