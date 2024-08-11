@@ -907,7 +907,7 @@ if __name__ == "__main__":
         torch.cuda.reset_peak_memory_stats()
     timings = []
     norm = -1.0  # dummy value to print in inference-only mode
-    for step in range(args.num_iterations + 1):
+    for step in range(1, args.num_iterations + 1):
         t0 = time.time()
         last_step = step == args.num_iterations
 
@@ -1007,7 +1007,7 @@ if __name__ == "__main__":
         # the 0th iteration is often an outlier (much slower) => skip logging it
         tokens_per_second = grad_accum_steps * ddp_world_size * B * T / (t1 - t0)
         print0(
-            f"step {step+1:4d}/{args.num_iterations} | train loss {lossf:.6f} | norm {norm:.4f} | lr {lr:.2e} | ({(t1-t0)*1000:.2f} ms | {tokens_per_second:.0f} tok/s)"
+            f"step {step:4d}/{args.num_iterations} | train loss {lossf:.6f} | norm {norm:.4f} | lr {lr:.2e} | ({(t1-t0)*1000:.2f} ms | {tokens_per_second:.0f} tok/s)"
         )
         # log to logile
         if master_process and logfile is not None:
@@ -1015,10 +1015,10 @@ if __name__ == "__main__":
                 f.write("s:%d trl:%f\n" % (step, lossf))
 
         if checkpoints_dir is not None and is_checkpoint_step(step):
-            save_model_and_config(checkpoints_dir, raw_model, step=step+1)
+            save_model_and_config(checkpoints_dir, raw_model, step=step)
 
         # keep track of smooth timings, last 20 iterations
-        if step > 0 and step > args.num_iterations - 20:
+        if step > 1 and step > args.num_iterations - 20:
             timings.append(t1 - t0)
 
     # print the average of the last 20 timings, to get something smooth-ish
