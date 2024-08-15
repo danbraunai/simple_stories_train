@@ -14,32 +14,60 @@ python train_llama.py --write_tensors=0 --num_iterations=50 --sequence_length=10
 you can also turn on flash-attention by appending --flash=1
 4 GPU:
 torchrun --standalone --nproc_per_node=4 train_llama.py --write_tensors=0 --num_iterations=50 --sequence_length=1024 --compile=1 --tensorcores=1 --dtype=bfloat16
+
+This implementation is based on
+- llm.c,           licensed under MIT ((c) 2024 Andrei Karpathy) and
+- TransformerLens, licensed under MIT ((c) 2022 TransformerLensOrg).
+
+
+MIT License:
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 """
 
 import inspect
 import math
 import os
 import struct
+import argparse
+import time
 from contextlib import nullcontext
 from dataclasses import dataclass
-from io import BufferedWriter
-from typing import Any
+from pathlib import Path
 
 import numpy as np
 import tiktoken
 import torch
+from torch import Tensor
 import torch._inductor.config as config
 import torch.distributed as dist
 import torch.nn as nn
 from dataloaders import StreamingDataLoader
-from jaxtyping import Float, Int
 from torch.distributed import destroy_process_group, init_process_group
 from torch.distributed.optim import ZeroRedundancyOptimizer
 from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
+from jaxtyping import Float, Int
 
 # -----------------------------------------------------------------------------
 # PyTorch nn.Module definitions for the Llama model
+
+from simple_stories_train.utils import save_model_and_config, print0, is_checkpoint_step
 
 # using a global to toggle flash-attention
 FLASH = 0
@@ -53,16 +81,16 @@ class LlamaConfig:
     n_head: int = 12
     n_embd: int = 768
     n_intermediate: int = 768 * 4 * 2 // 3  # SwiGLU has 2/3 of the hidden size
-    mlp_bias = False
-    attn_bias = False
-    rotary_adjacent_pairs = False
+    mlp_bias: bool = False
+    attn_bias: bool = False
+    rotary_adjacent_pairs: bool = False
     rotary_dim: int = 768 // 12  # i.e. same as d_head
     rotary_base: int = 10000
     n_ctx: int = 1024
     n_key_value_heads: int = (
         12 // 4
     )  # Note that llama 3.1 n_key_value_heads does not scale with n_heads
-    use_grouped_query_attention = True
+    use_grouped_query_attention: bool = True
 
 
 class CausalSelfAttention(nn.Module):
@@ -74,14 +102,14 @@ class CausalSelfAttention(nn.Module):
 
         if self.use_grouped_query_attention:
             self.repeat_kv_heads = config.n_head // config.n_key_value_heads
-            self.kv_attn = nn.Linear(config.n_embd, 2 * config.n_embd // self.repeat_kv_heads)
-            self.q_attn = nn.Linear(config.n_embd, config.n_embd)
+            self.kv_attn = nn.Linear(config.n_embd, 2 * config.n_embd // self.repeat_kv_heads, bias=config.attn_bias)
+            self.q_attn = nn.Linear(config.n_embd, config.n_embd, bias=config.attn_bias)
         else:
-            self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd)
+            self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, bias=config.attn_bias)
 
         # output projection
-        self.c_proj = nn.Linear(config.n_embd, config.n_embd)
-        self.LLMC_RESIDUAL_SCALE_FLAG = 1
+        self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=config.attn_bias)
+        self.c_proj.LLMC_RESIDUAL_SCALE_FLAG = 1 # type:ignore
         # regularization
         self.n_head = config.n_head
         self.n_embd = config.n_embd
@@ -108,7 +136,7 @@ class CausalSelfAttention(nn.Module):
         n_ctx: int,
         base: int = 10000,
         dtype: torch.dtype = torch.float32,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[Tensor, Tensor]:
         """
         Calculate the sine and cosine waves to use in a rotary embedding. See https://blog.eleuther.ai/rotary-embeddings/ for details
 
@@ -132,8 +160,8 @@ class CausalSelfAttention(nn.Module):
     def get_offset_position_ids(
         self,
         past_kv_pos_offset: int,
-        attention_mask: Int[torch.Tensor, "batch offset_pos"],
-    ) -> Float[torch.Tensor, "pos batch"]:
+        attention_mask: Int[Tensor, "batch offset_pos"],
+    ) -> Float[Tensor, "pos batch"]:
         """
         Returns the indices of non-padded tokens, offset by the position of the first attended token.
         """
@@ -146,7 +174,7 @@ class CausalSelfAttention(nn.Module):
         position_ids = shifted_position_ids.masked_fill(shifted_position_ids < 0, 0)
         return position_ids[:, past_kv_pos_offset:]  # [pos, batch]
 
-    def rotate_every_two(self, x: torch.Tensor) -> torch.Tensor:
+    def rotate_every_two(self, x: Tensor) -> Tensor:
         """
         Rotary helper function, splits x into blocks of size 2 along the final axis and maps [x0, x1] to [-x1, x0]
 
@@ -167,10 +195,10 @@ class CausalSelfAttention(nn.Module):
 
     def apply_rotary(
         self,
-        x: Float[torch.Tensor, "batch head pos head_size"],
+        x: Float[Tensor, "batch head pos head_size"],
         past_kv_pos_offset=0,
-        attention_mask: None | Int[torch.Tensor, "batch offset_pos"] = None,
-    ) -> Float[torch.Tensor, "batch head pos head_size"]:
+        attention_mask: Int[Tensor, "batch offset_pos"] | None = None,
+    ) -> Float[Tensor, "batch head pos head_size"]:
         # Only apply rotary to first rotary_dim dimensions (eg, if rotary_dim=64 and d_head=256, only apply to first 1/4 of dimensions)
         x = x.permute(
             0, 2, 1, 3
@@ -199,9 +227,9 @@ class CausalSelfAttention(nn.Module):
 
     def forward(
         self,
-        x: Float[torch.Tensor, "batch pos d_model"],
-        attention_mask: Int[torch.Tensor, "batch offset_pos"] | None = None,
-    ) -> Float[torch.Tensor, "batch pos d_model"]:
+        x: Float[Tensor, "batch pos d_model"],
+        attention_mask: Int[Tensor, "batch offset_pos"] | None = None,
+    ) -> Float[Tensor, "batch pos d_model"]:
         B, T, C = x.size()  # batch size, sequence length, embedding dimensionality (n_embd)
 
         if self.use_grouped_query_attention:
@@ -251,12 +279,12 @@ class SwiGLUMLP(nn.Module):
         self.down_proj = nn.Linear(config.n_intermediate, config.n_embd, bias=config.mlp_bias)
         self.act_fn = nn.functional.silu
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: Float[Tensor, "... dim"]) -> Float[Tensor, "... dim"]:
         return self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
 
 
 class LlamaRMSNorm(nn.Module):
-    def __init__(self, hidden_size: int, eps=1e-6):
+    def __init__(self, hidden_size: int, eps: float = 1e-6):
         """
         LlamaRMSNorm is equivalent to T5LayerNorm
         """
@@ -264,7 +292,7 @@ class LlamaRMSNorm(nn.Module):
         self.weight = nn.Parameter(torch.ones(hidden_size))
         self.variance_epsilon = eps
 
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+    def forward(self, hidden_states: Float[Tensor, "... dim"]) -> Float[Tensor, "... dim"]:
         input_dtype = hidden_states.dtype
         hidden_states = hidden_states.to(torch.float32)
         variance = hidden_states.pow(2).mean(-1, keepdim=True)
@@ -284,8 +312,8 @@ class Block(nn.Module):
         self.mlp = SwiGLUMLP(config)
 
     def forward(
-        self, x: Float[torch.Tensor, "batch pos d_model"]
-    ) -> Float[torch.Tensor, "batch pos d_model"]:
+        self, x: Float[Tensor, "... pos d_model"]
+    ) -> Float[Tensor, "... pos d_model"]:
         x = x + self.attn(self.rms_1(x))
         x = x + self.mlp(self.rms_2(x))
         return x
@@ -304,7 +332,8 @@ class Llama(nn.Module):
             )
         )
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
-        self.LLMC_SKIP_INIT = 1  # don't init this one, we will tie weights
+        # don't init this one, we will tie weights
+        self.lm_head.LLMC_SKIP_INIT = 1 # type:ignore
         self.transformer.wte.weight = (
             self.lm_head.weight
         )  # https://paperswithcode.com/method/weight-tying
@@ -319,12 +348,12 @@ class Llama(nn.Module):
             # apply special scaled init to the residual projections, per GPT-2 paper
             std = (
                 0.02
-                if not hasattr(self, "LLMC_RESIDUAL_SCALE_FLAG")
+                if not hasattr(module, "LLMC_RESIDUAL_SCALE_FLAG")
                 else 0.02 / math.sqrt(2 * self.config.n_layer)
             )
             # we want to skip initializing lm_head, which shares parameters with wte
             # and wte was already initialized down below during the Embedding init
-            if not hasattr(self, "LLMC_SKIP_INIT"):
+            if not hasattr(module, "LLMC_SKIP_INIT"):
                 torch.nn.init.normal_(module.weight, mean=0.0, std=std, generator=self.init_rng)
             if module.bias is not None:  # type: ignore
                 torch.nn.init.zeros_(module.bias)
@@ -333,10 +362,10 @@ class Llama(nn.Module):
 
     def forward(
         self,
-        idx: Float[torch.Tensor, "batch pos"],
-        targets: None | Float[torch.Tensor, "batch pos vocab"] = None,
+        idx: Float[Tensor, "batch pos"],
+        targets: Float[Tensor, "batch pos vocab"] | None = None,
         return_logits=True,
-    ):
+    )  -> tuple[Float[Tensor, "batch pos"] | None, Tensor | None]:
         device = idx.device
         b, t = idx.size()
         assert (
@@ -396,7 +425,7 @@ class Llama(nn.Module):
         config_args["vocab_size"] = 50257  # always 50257 for GPT model checkpoints
         config_args["block_size"] = 1024  # always 1024 for GPT model checkpoints
         # create a from-scratch initialized minGPT model
-        config = LlamaConfig(**config_args)
+        config = LlamaConfig(**config_args) #type: ignore
         model = Llama(config)
         sd = model.state_dict()
         sd_keys = sd.keys()
@@ -448,7 +477,7 @@ class Llama(nn.Module):
         betas: tuple[float, float],
         device_type: str,
         zero_stage: int,
-    ):
+    ) -> torch.optim.Optimizer:
         # start with all of the candidate parameters
         param_dict = {pn: p for pn, p in self.named_parameters()}
         # filter out those that do not require grad
@@ -494,11 +523,11 @@ class Llama(nn.Module):
     @torch.no_grad()
     def generate(
         self,
-        idx: Float[torch.Tensor, "batch pos"],
+        idx: Float[Tensor, "... pos"],
         max_new_tokens: int,
         temperature=1.0,
-        top_k: None | int = None,
-    ) -> Float[torch.Tensor, "batch pos"]:
+        top_k: int | None = None,
+    ) -> Float[Tensor, "... pos"]:
         """
         Take a conditioning sequence of indices idx (LongTensor of shape (b,t)) and complete
         the sequence max_new_tokens times, feeding the predictions back into the model each time.
@@ -526,200 +555,7 @@ class Llama(nn.Module):
 
         return idx
 
-
-# -----------------------------------------------------------------------------
-# Python -> C bridge utilities for saving params/grads/activations to .bin files
-
-
-def write_fp32(tensor: torch.Tensor, file: BufferedWriter):
-    t = tensor.detach().cpu().to(torch.float32)
-    b = t.numpy().tobytes()
-    file.write(b)
-
-
-def write_bf16(tensor: torch.Tensor, file: BufferedWriter):
-    t = tensor.detach().cpu().to(torch.bfloat16)
-    # numpy doesn't have bf16 datatype so we have to trick it
-    t = t.view(torch.int16)  # trick: reinterpret as int16
-    b = t.numpy().tobytes()
-    file.write(b)
-
-
-def write_tensors(
-    model_tensors: dict[str, torch.Tensor],
-    L: int,
-    file: BufferedWriter,
-    dtype: str,
-    mlp_bias=False,
-    attn_bias=False,
-):
-    # writes the GPT-2 model's weights to a binary file
-    assert dtype in {"float32", "bfloat16"}
-    write_fun = write_fp32 if dtype == "float32" else write_bf16
-    write_fun(model_tensors["transformer.wte.weight"], file)  # (V, C)
-    for i in range(L):  # (L, C)
-        write_fun(model_tensors[f"transformer.h.{i}.rms_1.weight"], file)
-    for i in range(L):
-        if "transformer.h.{i}.attn.q_attn.weight" in model_tensors:
-            write_fun(model_tensors[f"transformer.h.{i}.attn.q_attn.weight"], file)
-        if "transformer.h.{i}.attn.kv_attn.weight" in model_tensors:
-            write_fun(model_tensors[f"transformer.h.{i}.attn.kv_attn.weight"], file)
-        if "transformer.h.{i}.attn.c_attn.weight" in model_tensors:
-            write_fun(model_tensors[f"transformer.h.{i}.attn.c_attn.weight"], file)
-    for i in range(L):  # (L, C, C)
-        write_fun(model_tensors[f"transformer.h.{i}.attn.c_proj.weight"], file)
-    for i in range(L):  # (L, C)
-        if attn_bias:
-            write_fun(model_tensors[f"transformer.h.{i}.attn.c_proj.bias"], file)
-    for i in range(L):  # (L, C)
-        write_fun(model_tensors[f"transformer.h.{i}.rms_2.weight"], file)
-    for i in range(L):  # (L, 4C, C)
-        write_fun(model_tensors[f"transformer.h.{i}.mlp.gate_proj.weight"], file)
-    for i in range(L):  # (L, 4C)
-        if mlp_bias:
-            write_fun(model_tensors[f"transformer.h.{i}.mlp.gate_proj.bias"], file)
-    for i in range(L):  # (L, C, 4C)
-        write_fun(model_tensors[f"transformer.h.{i}.mlp.up_proj.weight"], file)
-    for i in range(L):  # (L, C)
-        if mlp_bias:
-            write_fun(model_tensors[f"transformer.h.{i}.mlp.up_proj.bias"], file)
-    for i in range(L):  # (L, 4C, C)
-        write_fun(model_tensors[f"transformer.h.{i}.mlp.down_proj.weight"], file)
-    for i in range(L):  # (L, C)
-        if mlp_bias:
-            write_fun(model_tensors[f"transformer.h.{i}.mlp.down_proj.bias"], file)
-    write_fun(model_tensors["transformer.rms_f.weight"], file)  # (C, )
-
-
-@torch.no_grad()
-def pad_vocab(tensor: torch.Tensor, multiple=128, value=0):
-    """
-    The dimension of the vocab size in GPT-2 is 50,257
-    which is unfortunately a very unfriendly number for a lot of
-    matrix operations on the GPU. So we pad it to the nearest
-    friendlier multiple, e.g. 50,304 if multiple=128 when we
-    export the weights into C land. This is a NOOP algorithmically
-    and is only done to make the tensor operations more efficient.
-    """
-    assert tensor.ndim == 2
-    V, C = tensor.shape
-    assert V == 50257, "just being defensive here"
-    # calculate padded vocab size by rounding up to nearest multiple
-    Vp = ((V + multiple - 1) // multiple) * multiple
-    # pad the tensor
-    pad_rows = Vp - V
-    padded = tensor if pad_rows == 0 else F.pad(tensor, (0, 0, 0, pad_rows), value=value)
-    assert padded.shape == (Vp, C)
-    return padded
-
-
-def write_model(model: nn.Module | Llama, filename: str, dtype: str):
-    # everything we need to instantiate the model
-    # 1) header is: version int, GPTConfig ints, padding to 1024 bytes
-    assert dtype in {"float32", "bfloat16"}  # float16 todo maybe later
-    version = {
-        "float32": 3,  # 3: all tensors are fp32, padded vocab
-        "bfloat16": 5,  # 5: all tensors are bf16, padded vocab
-    }[dtype]
-    header = torch.zeros(256, dtype=torch.int32)
-    header[0] = 20240326  # magic
-    header[1] = version  # checkpoint version
-    header[2] = model.config.block_size
-    header[3] = model.config.vocab_size
-    header[4] = model.config.n_layer
-    header[5] = model.config.n_head
-    header[6] = model.config.n_embd
-    # 2) the parameters follow the header
-    params = {name: param.cpu() for name, param in model.named_parameters()}
-    # pad the vocab to a multiple of 128 here at export, for efficiency in C
-    wte = params["transformer.wte.weight"]  # (V, C)
-    wte_padded = pad_vocab(wte)  # (Vp, C)
-    params["transformer.wte.weight"] = wte_padded  # (Vp, C)
-    print(f"padded vocab size from {wte.size(0)} to {wte_padded.size(0)}")
-    header[7] = wte_padded.size(0)  # padded vocab size store in header
-    # now write to file
-    with open(filename, "wb") as file:
-        file.write(header.numpy().tobytes())  # header
-        write_tensors(params, model.config.n_layer, file, dtype)  # params
-    print(f"wrote {filename}")
-
-
-def write_state(
-    model: nn.Module | Llama,
-    x: torch.Tensor,
-    y: torch.Tensor,
-    logits: torch.Tensor,
-    loss: torch.Tensor,
-    filename: str,
-):
-    # the state is used for debugging.
-    # it contains information about the input, logits, loss, and the parameter gradients
-    # this can be used for checking the computation correctness in C
-    header = torch.zeros(256, dtype=torch.int32)
-    header[0] = 20240327  # magic
-    header[1] = 2  # run state version = 2 (1 -> 2 for padded vocab changes)
-    header[2] = x.size(0)  # batch size of the batch, B
-    header[3] = x.size(1)  # temporal extent of the batch, T
-    grads = {}
-    for name, param in model.named_parameters():
-        if param.grad != None:
-            grads[name] = param.grad.cpu()
-    # pad the vocab grads here as well, to mirror write_model
-    wte_grad = grads["transformer.wte.weight"]  # (V, C)
-    wte_grad_padded = pad_vocab(wte_grad, value=0)  # (Vp, C) # TODO later maybe pad with nan?
-    grads["transformer.wte.weight"] = wte_grad_padded  # (Vp, C)
-    print(
-        f"padded vocab size in reference grads from {wte_grad.size(0)} to {wte_grad_padded.size(0)}"
-    )
-    with open(filename, "wb") as file:
-        # header
-        file.write(header.numpy().tobytes())
-        # input x
-        file.write(x.cpu().numpy().astype("int32").tobytes())  # (B, T)
-        # targets y
-        file.write(y.cpu().numpy().astype("int32").tobytes())  # (B, T)
-        # logits (result of the model forward pass)
-        write_fp32(logits.cpu(), file)
-        # loss (single float, result of the cross entropy loss)
-        write_fp32(loss.cpu(), file)
-        # gradients
-        write_tensors(grads, model.config.n_layer, file, "float32")
-    print(f"wrote {filename}")
-
-
-def write_tokenizer(enc: tiktoken.core.Encoding, filename: str):
-    n = enc.max_token_value + 1
-    header = torch.zeros(256, dtype=torch.int32)
-    header[0] = 20240328  # magic
-    header[1] = 2  # tokenizer version = 2 (1 -> 2: includes EOT token)
-    header[2] = n  # number of tokens
-    header[3] = enc.eot_token  # EOT token
-    with open(filename, "wb") as file:
-        file.write(header.numpy().tobytes())
-        for i in range(n):
-            b = enc.decode_bytes([i])
-            length = len(b)
-            assert length < 256, f"Token length exceeds 255: {length}"
-            file.write(struct.pack("<B", length))  # Write the length as a 1-byte unsigned integer
-            file.write(b)  # Write the actual bytes
-    print(f"wrote {filename}")
-
-
-# -----------------------------------------------------------------------------s
-# int main
-
-
-def print0(*args: Any, **kwargs: Any):
-    # modified print that only prints from the master process
-    # if this is not a distributed run, it's just a print
-    if int(os.environ.get("RANK", 0)) == 0:
-        print(*args, **kwargs)
-
-
 if __name__ == "__main__":
-    import argparse
-    import time
-
     print0(f"Running pytorch {torch.__version__}")
 
     # default settings will overfit a tiny batch of data
@@ -730,7 +566,6 @@ if __name__ == "__main__":
         "--input_bin",
         type=str,
         default="karpathy/tiny_shakespeare",
-        help="input .bin to train on",
     )
     parser.add_argument(
         "--input_val_bin", type=str, default="", help="input .bin to eval validation loss on"
@@ -892,8 +727,6 @@ if __name__ == "__main__":
 
     # init (and write) the tokenizer
     enc: tiktoken.core.Encoding = tiktoken.get_encoding("gpt2")
-    if master_process and args.write_tensors:  # tokenizer is technically not tensors but ok
-        write_tokenizer(enc, "gpt2_tokenizer.bin")
 
     # init the model, either from scratch or from OpenAI pretrained checkpoint
     if args.model[0] == "d":
@@ -964,32 +797,6 @@ if __name__ == "__main__":
         val_loader = StreamingDataLoader(args.input_val_bin, B, T, ddp_rank, ddp_world_size)
 
     # -------------------------------------------------------------------------
-    # PyTorch -> C bridge: save some weights and state for C to load later as reference
-
-    # do one forward pass to generate ground truth for our C tests
-    if master_process and args.write_tensors and (not args.inference_only):
-        x, y = train_loader.next_batch()
-        x, y = x.to(device), y.to(device)
-        logits, loss = model(x, y)
-        loss.backward()
-        # save model params, in both float32 and bfloat16
-        model_to_size = {
-            "gpt2": "124M",
-            "gpt2-medium": "355M",
-            "gpt2-large": "774M",
-            "gpt2-xl": "1558M",
-        }
-        model_to_size.update({f"d{d}": f"d{d}" for d in [2, 12, 24, 36, 48]})
-        model_size_str = model_to_size[args.model]  # e.g. "124M", or "d12"
-        write_model(model, f"gpt2_{model_size_str}.bin", dtype="float32")
-        write_model(model, f"gpt2_{model_size_str}_bf16.bin", dtype="bfloat16")
-        # save x, y, logits, loss, and parameter gradients, for debugging C
-        # always store these in fp32 to have an accurate reference (?)
-        write_state(model, x, y, logits, loss, f"gpt2_{model_size_str}_debug_state.bin")
-        # reset the train_loader for the optimization below
-        train_loader.reset()
-
-    # -------------------------------------------------------------------------
     # main training loop
 
     # here we wrap model into DDP container
@@ -1023,18 +830,26 @@ if __name__ == "__main__":
 
     # create the logging directory if it does not exist
     logfile = None
+    checkpoints_dir = None
+    output_dir = None
     if args.output_dir:
-        os.makedirs(args.output_dir, exist_ok=True)
-        logfile = os.path.join(args.output_dir, "main.log")
+        output_dir = Path(args.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        logfile = output_dir / "main.log"
         # create the log file "main.log" inside it, and wipe it clean
         with open(logfile, "w") as f:
             pass
+
+        # set our checkpoints directory and save off the initilized model
+        checkpoints_dir = output_dir / 'checkpoints'
+        checkpoints_dir.mkdir(parents=True, exist_ok=True)
+        save_model_and_config(checkpoints_dir, raw_model, step=0)
 
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()
     timings = []
     norm = -1.0  # dummy value to print in inference-only mode
-    for step in range(args.num_iterations + 1):
+    for step in range(1, args.num_iterations + 1):
         t0 = time.time()
         last_step = step == args.num_iterations
 
@@ -1066,7 +881,7 @@ if __name__ == "__main__":
             # before we end, let's also do one round of inference
             # we'll kick off the generation with "<|endoftext|>", which designates the start of a new sequence
             start_ids = [enc.eot_token]
-            xg = torch.tensor(start_ids, dtype=torch.long, device=device)[None, ...]
+            xg = torch.tensor(start_ids, dtype=torch.long, device=device)[None, ...] 
             max_new_tokens = 32
             temperature = 1.0
             top_k = 40
@@ -1089,7 +904,7 @@ if __name__ == "__main__":
         if args.overfit_single_batch:
             train_loader.reset()
         # micro-batch loop where we do gradient accumulation to reach desired total batch size
-        lossf = torch.Tensor(
+        lossf = Tensor(
             [0.0]
         )  # for getting the mean loss (as simple float) over the accumulation steps
         for micro_step in range(grad_accum_steps):
@@ -1136,15 +951,18 @@ if __name__ == "__main__":
         # the 0th iteration is often an outlier (much slower) => skip logging it
         tokens_per_second = grad_accum_steps * ddp_world_size * B * T / (t1 - t0)
         print0(
-            f"step {step+1:4d}/{args.num_iterations} | train loss {lossf:.6f} | norm {norm:.4f} | lr {lr:.2e} | ({(t1-t0)*1000:.2f} ms | {tokens_per_second:.0f} tok/s)"
+            f"step {step:4d}/{args.num_iterations} | train loss {lossf:.6f} | norm {norm:.4f} | lr {lr:.2e} | ({(t1-t0)*1000:.2f} ms | {tokens_per_second:.0f} tok/s)"
         )
         # log to logile
         if master_process and logfile is not None:
             with open(logfile, "a") as f:
                 f.write("s:%d trl:%f\n" % (step, lossf))
 
+        if checkpoints_dir is not None and is_checkpoint_step(step):
+            save_model_and_config(checkpoints_dir, raw_model, step=step)
+
         # keep track of smooth timings, last 20 iterations
-        if step > 0 and step > args.num_iterations - 20:
+        if step > 1 and step > args.num_iterations - 20:
             timings.append(t1 - t0)
 
     # print the average of the last 20 timings, to get something smooth-ish
