@@ -49,8 +49,7 @@ import argparse
 import time
 from contextlib import nullcontext
 from dataclasses import dataclass
-from io import BufferedWriter
-from typing import Any
+from pathlib import Path
 
 import numpy as np
 import tiktoken
@@ -67,6 +66,8 @@ from jaxtyping import Float, Int
 
 # -----------------------------------------------------------------------------
 # PyTorch nn.Module definitions for the Llama model
+
+from simple_stories_train.utils import save_model_and_config, print0, is_checkpoint_step
 
 # using a global to toggle flash-attention
 FLASH = 0
@@ -645,14 +646,6 @@ class DistributedDataLoader:
             self.advance()
         return x, y
 
-
-def print0(*args: Any, **kwargs: Any):
-    # modified print that only prints from the master process
-    # if this is not a distributed run, it's just a print
-    if int(os.environ.get("RANK", 0)) == 0:
-        print(*args, **kwargs)
-
-
 if __name__ == "__main__":
     print0(f"Running pytorch {torch.__version__}")
 
@@ -932,18 +925,26 @@ if __name__ == "__main__":
 
     # create the logging directory if it does not exist
     logfile = None
+    checkpoints_dir = None
+    output_dir = None
     if args.output_dir:
-        os.makedirs(args.output_dir, exist_ok=True)
-        logfile = os.path.join(args.output_dir, "main.log")
+        output_dir = Path(args.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        logfile = output_dir / "main.log"
         # create the log file "main.log" inside it, and wipe it clean
         with open(logfile, "w") as f:
             pass
+
+        # set our checkpoints directory and save off the initilized model
+        checkpoints_dir = output_dir / 'checkpoints'
+        checkpoints_dir.mkdir(parents=True, exist_ok=True)
+        save_model_and_config(checkpoints_dir, raw_model, step=0)
 
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()
     timings = []
     norm = -1.0  # dummy value to print in inference-only mode
-    for step in range(args.num_iterations + 1):
+    for step in range(1, args.num_iterations + 1):
         t0 = time.time()
         last_step = step == args.num_iterations
 
@@ -1045,15 +1046,18 @@ if __name__ == "__main__":
         # the 0th iteration is often an outlier (much slower) => skip logging it
         tokens_per_second = grad_accum_steps * ddp_world_size * B * T / (t1 - t0)
         print0(
-            f"step {step+1:4d}/{args.num_iterations} | train loss {lossf:.6f} | norm {norm:.4f} | lr {lr:.2e} | ({(t1-t0)*1000:.2f} ms | {tokens_per_second:.0f} tok/s)"
+            f"step {step:4d}/{args.num_iterations} | train loss {lossf:.6f} | norm {norm:.4f} | lr {lr:.2e} | ({(t1-t0)*1000:.2f} ms | {tokens_per_second:.0f} tok/s)"
         )
         # log to logile
         if master_process and logfile is not None:
             with open(logfile, "a") as f:
                 f.write("s:%d trl:%f\n" % (step, lossf))
 
+        if checkpoints_dir is not None and is_checkpoint_step(step):
+            save_model_and_config(checkpoints_dir, raw_model, step=step)
+
         # keep track of smooth timings, last 20 iterations
-        if step > 0 and step > args.num_iterations - 20:
+        if step > 1 and step > args.num_iterations - 20:
             timings.append(t1 - t0)
 
     # print the average of the last 20 timings, to get something smooth-ish
