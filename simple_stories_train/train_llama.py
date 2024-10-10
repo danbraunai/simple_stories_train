@@ -365,7 +365,7 @@ class Llama(nn.Module):
         idx: Float[Tensor, "batch pos"],
         targets: Float[Tensor, "batch pos vocab"] | None = None,
         return_logits=True,
-    )  -> tuple[Float[Tensor, "batch pos"] | None, Tensor | None]:
+    )  -> tuple[Float[Tensor, "batch pos"] | None, Float[Tensor, ""] | None]:
         device = idx.device
         b, t = idx.size()
         assert (
