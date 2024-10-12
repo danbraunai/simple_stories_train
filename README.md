@@ -33,6 +33,12 @@ python simple_stories_train/tinyshakespeare.py
 ```
 
 Then, train llama on it:
-`python simple_stories_train/train_llama.py --model d12 --input_bin simple_stories_train/tinyshakespeare/tiny_shakespeare_val.bin`
+`python simple_stories_train/train_llama.py --model d12 --input_bin
+simple_stories_train/tinyshakespeare/tiny_shakespeare_train.bin --input_val_bin
+simple_stories_train/tinyshakespeare/tiny_shakespeare_val.bin --wandb_project
+simple-stories-training --val_loss_every 3 --sample_every 3`
 
-You may be asked to enter your wandb API key. You can find it in your [wandb account settings](https://wandb.ai/settings). Alternatively, to avoid entering your API key on program execution, you can set the environment variable `WANDB_API_KEY` to your API key.
+You may be asked to enter your wandb API key. You can find it in your [wandb account
+settings](https://wandb.ai/settings). Alternatively, to avoid entering your API key on program
+execution, you can set the environment variable `WANDB_API_KEY` to your API key, or put it in a
+`.env` file under the root of the repository.
