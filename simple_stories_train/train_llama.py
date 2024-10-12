@@ -40,12 +40,11 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 """
 
+import argparse
 import glob
 import inspect
 import math
 import os
-import struct
-import argparse
 import time
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -54,20 +53,28 @@ from pathlib import Path
 import numpy as np
 import tiktoken
 import torch
-from torch import Tensor
 import torch._inductor.config as config
 import torch.distributed as dist
 import torch.nn as nn
+from jaxtyping import Float, Int
+from torch import Tensor
 from torch.distributed import destroy_process_group, init_process_group
 from torch.distributed.optim import ZeroRedundancyOptimizer
 from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
-from jaxtyping import Float, Int
+
+from simple_stories_train.utils import (
+    init_wandb,
+    is_checkpoint_step,
+    log_generations,
+    log_metrics,
+    print0,
+    save_model_and_config,
+)
 
 # -----------------------------------------------------------------------------
 # PyTorch nn.Module definitions for the Llama model
 
-from simple_stories_train.utils import save_model_and_config, print0, is_checkpoint_step
 
 # using a global to toggle flash-attention
 FLASH = 0
@@ -102,14 +109,16 @@ class CausalSelfAttention(nn.Module):
 
         if self.use_grouped_query_attention:
             self.repeat_kv_heads = config.n_head // config.n_key_value_heads
-            self.kv_attn = nn.Linear(config.n_embd, 2 * config.n_embd // self.repeat_kv_heads, bias=config.attn_bias)
+            self.kv_attn = nn.Linear(
+                config.n_embd, 2 * config.n_embd // self.repeat_kv_heads, bias=config.attn_bias
+            )
             self.q_attn = nn.Linear(config.n_embd, config.n_embd, bias=config.attn_bias)
         else:
             self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, bias=config.attn_bias)
 
         # output projection
         self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=config.attn_bias)
-        self.c_proj.LLMC_RESIDUAL_SCALE_FLAG = 1 # type:ignore
+        self.c_proj.LLMC_RESIDUAL_SCALE_FLAG = 1  # type:ignore
         # regularization
         self.n_head = config.n_head
         self.n_embd = config.n_embd
@@ -311,9 +320,7 @@ class Block(nn.Module):
         self.rms_2 = LlamaRMSNorm(config.n_embd)
         self.mlp = SwiGLUMLP(config)
 
-    def forward(
-        self, x: Float[Tensor, "... pos d_model"]
-    ) -> Float[Tensor, "... pos d_model"]:
+    def forward(self, x: Float[Tensor, "... pos d_model"]) -> Float[Tensor, "... pos d_model"]:
         x = x + self.attn(self.rms_1(x))
         x = x + self.mlp(self.rms_2(x))
         return x
@@ -333,7 +340,7 @@ class Llama(nn.Module):
         )
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         # don't init this one, we will tie weights
-        self.lm_head.LLMC_SKIP_INIT = 1 # type:ignore
+        self.lm_head.LLMC_SKIP_INIT = 1  # type:ignore
         self.transformer.wte.weight = (
             self.lm_head.weight
         )  # https://paperswithcode.com/method/weight-tying
@@ -365,7 +372,7 @@ class Llama(nn.Module):
         idx: Float[Tensor, "batch pos"],
         targets: Float[Tensor, "batch pos vocab"] | None = None,
         return_logits=True,
-    )  -> tuple[Float[Tensor, "batch pos"] | None, Float[Tensor, ""] | None]:
+    ) -> tuple[Float[Tensor, "batch pos"] | None, Float[Tensor, ""] | None]:
         device = idx.device
         b, t = idx.size()
         assert (
@@ -425,7 +432,7 @@ class Llama(nn.Module):
         config_args["vocab_size"] = 50257  # always 50257 for GPT model checkpoints
         config_args["block_size"] = 1024  # always 1024 for GPT model checkpoints
         # create a from-scratch initialized minGPT model
-        config = LlamaConfig(**config_args) #type: ignore
+        config = LlamaConfig(**config_args)  # type: ignore
         model = Llama(config)
         sd = model.state_dict()
         sd_keys = sd.keys()
@@ -628,7 +635,7 @@ class DistributedDataLoader:
         self.current_position = self.process_rank * self.B * self.T
 
     def advance(self):  # advance to next data shard
-        self.current_shard = (self.current_shard + 1) % len(self.files) # type:ignore
+        self.current_shard = (self.current_shard + 1) % len(self.files)  # type:ignore
         self.current_position = self.process_rank * self.B * self.T
         self.tokens = _load_data_shard(self.files[self.current_shard])
 
@@ -645,6 +652,7 @@ class DistributedDataLoader:
         if self.current_position + (B * T * self.num_processes + 1) > len(self.tokens):
             self.advance()
         return x, y
+
 
 if __name__ == "__main__":
     print0(f"Running pytorch {torch.__version__}")
@@ -733,6 +741,8 @@ if __name__ == "__main__":
     )
     # python -> C bridge
     parser.add_argument("--write_tensors", type=int, default=1, help="write tensors to disk")
+    # wandb settings
+    parser.add_argument("--wandb_project", type=str, default="", help="wandb project name")
     args = parser.parse_args()
 
     # args error checking and convenience variables
@@ -893,6 +903,7 @@ if __name__ == "__main__":
 
     # -------------------------------------------------------------------------
     # main training loop
+    init_wandb(args, args.wandb_project)
 
     # here we wrap model into DDP container
     if ddp:
@@ -936,7 +947,7 @@ if __name__ == "__main__":
             pass
 
         # set our checkpoints directory and save off the initilized model
-        checkpoints_dir = output_dir / 'checkpoints'
+        checkpoints_dir = output_dir / "checkpoints"
         checkpoints_dir.mkdir(parents=True, exist_ok=True)
         save_model_and_config(checkpoints_dir, raw_model, step=0)
 
@@ -944,6 +955,7 @@ if __name__ == "__main__":
         torch.cuda.reset_peak_memory_stats()
     timings = []
     norm = -1.0  # dummy value to print in inference-only mode
+    generations = []
     for step in range(1, args.num_iterations + 1):
         t0 = time.time()
         last_step = step == args.num_iterations
@@ -962,6 +974,8 @@ if __name__ == "__main__":
                     _, loss = model(x, y, return_logits=False)
                     val_loss += loss.item()
                 val_loss /= args.val_max_steps
+            # log to wandb
+            log_metrics(step, {"val_loss": val_loss})
             # log to console and to file
             print0(f"val loss {val_loss}")
             if master_process and logfile is not None:
@@ -976,7 +990,7 @@ if __name__ == "__main__":
             # before we end, let's also do one round of inference
             # we'll kick off the generation with "<|endoftext|>", which designates the start of a new sequence
             start_ids = [enc.eot_token]
-            xg = torch.tensor(start_ids, dtype=torch.long, device=device)[None, ...] 
+            xg = torch.tensor(start_ids, dtype=torch.long, device=device)[None, ...]
             max_new_tokens = 32
             temperature = 1.0
             top_k = 40
@@ -984,6 +998,9 @@ if __name__ == "__main__":
             print0("---------------")
             print0(enc.decode(yg[0].tolist()))
             print0("---------------")
+            # log to wandb
+            generations.append([step, enc.decode(yg[0].tolist())])
+            log_generations(step, generations)
 
         # bit confusing: we want to make sure to eval and sample on 0th iteration
         # but also after the very last iteration. so we loop for step <= num_iterations
@@ -1047,6 +1064,14 @@ if __name__ == "__main__":
         tokens_per_second = grad_accum_steps * ddp_world_size * B * T / (t1 - t0)
         print0(
             f"step {step:4d}/{args.num_iterations} | train loss {lossf:.6f} | norm {norm:.4f} | lr {lr:.2e} | ({(t1-t0)*1000:.2f} ms | {tokens_per_second:.0f} tok/s)"
+        )
+        # log to wandb
+        log_metrics(
+            step,
+            {
+                "train_loss": lossf,
+                "lr": lr,
+            },
         )
         # log to logile
         if master_process and logfile is not None:

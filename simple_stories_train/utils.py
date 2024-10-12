@@ -1,9 +1,12 @@
 import os
 from pathlib import Path
+from typing import Any
 
 import torch
+import wandb
+from dotenv import load_dotenv
 from torch import nn
-from typing import Any
+
 
 def print0(*args: Any, **kwargs: Any) -> None:
     # modified print that only prints from the master process
@@ -31,3 +34,27 @@ def save_model_and_config(save_dir: Path, model: nn.Module, step: int) -> None:
     model_file = save_dir / f"model_step_{step}.pt"
     torch.save(model.state_dict(), model_file)
     print0(f"Saved model to {model_file}")
+
+
+def init_wandb(config: Any, project: str) -> None:
+    load_dotenv(override=True)
+    wandb.init(
+        project=project,
+        config=config,
+    )
+
+
+def log_metrics(step: int, metrics: dict[str, Any]) -> None:
+    wandb.log(metrics, step=step)
+
+
+def log_generations(step: int, generations: list[list[str]]) -> None:
+    wandb.log(
+        {
+            "generation_tables": wandb.Table(
+                data=generations,
+                columns=["step", "generated text"],
+            )
+        },
+        step=step,
+    )
