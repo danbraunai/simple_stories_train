@@ -1,11 +1,10 @@
 from typing import Any
 
-import einops
 import numpy as np
 import torch
 from datasets import Dataset, IterableDataset, load_dataset
 from numpy.typing import NDArray
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
 from tokenizers import Tokenizer
 from torch.utils.data import DataLoader
 
@@ -207,9 +206,13 @@ dataset_config = DatasetConfig(
     column_name="story",
 )
 
-dataset = create_data_loader(
+dataset, tokenizer = create_data_loader(
     dataset_config=dataset_config,
-    batch_size=1,
+    batch_size=2,
     buffer_size=1000,
     global_seed=0
 )
+
+tokens = next(iter(dataset))
+print(tokens["input_ids"][0])
+print(tokenizer.decode(np.array([x for x in tokens["input_ids"][0].tolist() if x > 0],dtype=np.int32)))

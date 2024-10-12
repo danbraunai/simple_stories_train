@@ -40,11 +40,11 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 """
 
+import argparse
 import inspect
 import math
 import os
 import struct
-import argparse
 import time
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -53,21 +53,20 @@ from pathlib import Path
 import numpy as np
 import tiktoken
 import torch
-from torch import Tensor
 import torch._inductor.config as config
 import torch.distributed as dist
 import torch.nn as nn
 from dataloaders import StreamingDataLoader
+from jaxtyping import Float, Int
+from torch import Tensor
 from torch.distributed import destroy_process_group, init_process_group
 from torch.distributed.optim import ZeroRedundancyOptimizer
 from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
-from jaxtyping import Float, Int
 
 # -----------------------------------------------------------------------------
 # PyTorch nn.Module definitions for the Llama model
-
-from simple_stories_train.utils import save_model_and_config, print0, is_checkpoint_step
+from simple_stories_train.utils import is_checkpoint_step, print0, save_model_and_config
 
 # using a global to toggle flash-attention
 FLASH = 0
