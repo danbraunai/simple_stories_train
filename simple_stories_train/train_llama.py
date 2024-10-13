@@ -44,7 +44,6 @@ import argparse
 import inspect
 import math
 import os
-import struct
 import time
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -56,7 +55,7 @@ import torch
 import torch._inductor.config as config
 import torch.distributed as dist
 import torch.nn as nn
-from dataloaders import StreamingDataLoader
+from dataloaders import DatasetConfig, create_data_loader
 from jaxtyping import Float, Int
 from torch import Tensor
 from torch.distributed import destroy_process_group, init_process_group
@@ -66,7 +65,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 
 # -----------------------------------------------------------------------------
 # PyTorch nn.Module definitions for the Llama model
-from simple_stories_train.utils import is_checkpoint_step, print0, save_model_and_config
+from utils import is_checkpoint_step, print0, save_model_and_config
 
 # using a global to toggle flash-attention
 FLASH = 0
@@ -564,7 +563,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--input_bin",
         type=str,
-        default="karpathy/tiny_shakespeare",
+        default="lennart-finke/SimpleStories",
     )
     parser.add_argument(
         "--input_val_bin", type=str, default="", help="input .bin to eval validation loss on"
@@ -621,10 +620,6 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--sample_every", type=int, default=0, help="how often to sample from the model?"
-    )
-    # debugging
-    parser.add_argument(
-        "--overfit_single_batch", type=int, default=1, help="overfit just one batch of data"
     )
     # numerics
     parser.add_argument("--tensorcores", type=int, default=0, help="use tensorcores")
@@ -695,7 +690,7 @@ if __name__ == "__main__":
 
     # calculate gradient accumulation from the desired total batch size and the current run configuration
     tokens_per_fwdbwd = B * T * ddp_world_size
-    assert args.total_batch_size % tokens_per_fwdbwd == 0
+    assert args.total_batch_size % tokens_per_fwdbwd == 0, f"Mismatch between batch size and tokens {args.total_batch_size} % {tokens_per_fwdbwd} != 0"
     grad_accum_steps = args.total_batch_size // tokens_per_fwdbwd
     print0(f"total desired batch size: {args.total_batch_size}")
     print0(f"=> calculated gradient accumulation steps: {grad_accum_steps}")
@@ -733,7 +728,7 @@ if __name__ == "__main__":
         model_config = {
             "d2": LlamaConfig(
                 block_size=1024,
-                vocab_size=50257,
+                vocab_size=50257, # TODO: Make this depend on the tokenizer vocab size
                 n_layer=2,
                 n_head=2,
                 n_embd=12,
@@ -790,10 +785,35 @@ if __name__ == "__main__":
         model: nn.Module = torch.compile(model)  # type: ignore[reportArgumentType]
 
     # load tokens
-    train_loader = StreamingDataLoader(args.input_bin, B, T, ddp_rank, ddp_world_size)
-    val_loader = None
-    if args.input_val_bin:
-        val_loader = StreamingDataLoader(args.input_val_bin, B, T, ddp_rank, ddp_world_size)
+    dataset_config = DatasetConfig(
+        dataset_name=args.input_bin,
+        is_tokenized=False,
+        tokenizer_file_path="simple_stories_train/tokenizer/stories-3072.json",
+        streaming=False,
+        split="train",
+        n_ctx=T,
+        seed=None,
+        column_name="story",
+        ddp_rank=ddp_rank,
+        ddp_world_size=ddp_world_size
+    )
+
+    train_loader, tokenizer = create_data_loader(
+        dataset_config=dataset_config,
+        batch_size=B,
+        buffer_size=1000,
+        global_seed=0
+    )
+    train_loader = iter(train_loader) # Is this the right way to sample from a Pytorch DataLoader?
+    
+    dataset_config.split = "train" # TODO: Change this to "val" when we have a validation dataset
+    val_loader, tokenizer = create_data_loader(
+        dataset_config=dataset_config,
+        batch_size=B,
+        buffer_size=1000,
+        global_seed=0
+    )
+    val_loader = iter(val_loader)
 
     # -------------------------------------------------------------------------
     # main training loop
@@ -853,15 +873,15 @@ if __name__ == "__main__":
         last_step = step == args.num_iterations
 
         # once in a while evaluate the validation dataset
-        if (args.val_loss_every > 0 and (step % args.val_loss_every == 0 or last_step)) and (
-            val_loader is not None
-        ):
+        if (args.val_loss_every > 0 and (step % args.val_loss_every == 0 or last_step)):
             model.eval()
-            val_loader.reset()
+            # val_loader.reset() # What was reset good for again?
             with torch.no_grad():
                 val_loss = 0.0
                 for _ in range(args.val_max_steps):
-                    x, y = val_loader.next_batch()
+                    bat = next(val_loader)
+                    x = bat[-1:].view(B, T)  # inputs
+                    y = bat[1:].view(B, T)  # targets
                     x, y = x.to(device), y.to(device)
                     _, loss = model(x, y, return_logits=False)
                     val_loss += loss.item()
@@ -899,16 +919,16 @@ if __name__ == "__main__":
         # --------------- TRAINING SECTION BEGIN -----------------
         model.train()
         optimizer.zero_grad(set_to_none=True)
-        # if we are trying to overfit a single batch, we reset the loader here
-        if args.overfit_single_batch:
-            train_loader.reset()
+
         # micro-batch loop where we do gradient accumulation to reach desired total batch size
         lossf = Tensor(
             [0.0]
         )  # for getting the mean loss (as simple float) over the accumulation steps
         for micro_step in range(grad_accum_steps):
             # fetch a batch
-            x, y = train_loader.next_batch()
+            bat = next(train_loader)["input_ids"].to(torch.int)
+            x = bat.view(B, T)[:,:-1]  # inputs
+            y = bat.view(B, T)[:,1:]  # targets
             x, y = x.to(device), y.to(device)
             if ddp:
                 # we want only the last micro-step to sync grads in a DDP model
@@ -923,7 +943,7 @@ if __name__ == "__main__":
                 # addition of gradients corresponds to a SUM in the objective, but
                 # instead of a SUM we want MEAN, so we scale the loss here
                 loss = loss / grad_accum_steps
-                lossf += loss.detach()  # keep track of the mean loss
+                lossf += loss.item()  # keep track of the mean loss
             # backward pass
             if not args.inference_only:
                 loss.backward()

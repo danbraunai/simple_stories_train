@@ -22,6 +22,8 @@ class DatasetConfig(BaseModel):
     n_ctx: int
     seed: int | None = None
     column_name: str = "input_ids"
+    ddp_rank: int | None = None
+    ddp_world_size: int | None = None
     """The name of the column in the dataset that contains the data (tokenized or non-tokenized).
     Typically 'input_ids' for datasets stored with e2e_sae/scripts/upload_hf_dataset.py, or "tokens"
     for datasets tokenized in TransformerLens (e.g. NeelNanda/pile-10k)."""
@@ -194,25 +196,3 @@ def create_data_loader(
         shuffle=False,
     )
     return loader, tokenizer
-
-dataset_config = DatasetConfig(
-    dataset_name="lennart-finke/SimpleStories",
-    is_tokenized=False,
-    tokenizer_file_path="simple_stories_train/tokenizer/stories-3072.json",
-    streaming=False,
-    split="train",
-    n_ctx=1024,
-    seed=None,
-    column_name="story",
-)
-
-dataset, tokenizer = create_data_loader(
-    dataset_config=dataset_config,
-    batch_size=2,
-    buffer_size=1000,
-    global_seed=0
-)
-
-tokens = next(iter(dataset))
-print(tokens["input_ids"][0])
-print(tokenizer.decode(np.array([x for x in tokens["input_ids"][0].tolist() if x > 0],dtype=np.int32)))

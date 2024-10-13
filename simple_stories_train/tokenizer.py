@@ -1,6 +1,3 @@
-# ruff: noqa
-# pyright: ignore
-
 """
 TODO: Use the finalized tokenizer.
 This file is copied almost 1:1 from Nix Goldowsky-Dill's adaption of the tokenizer in https://github.com/juand-r/tiny_tokenizer.
@@ -25,10 +22,10 @@ def clean_dataset():
     )
     cleaned = [
         s.translate(trans).encode("ascii", "ignore").decode("ascii").lower()
-        for s in dataset["train"]["story"]
+        for s in dataset["train"]["story"] # pyright: ignore
     ]
 
-    n_train = int(len(cleaned) * 0.9)
+    n_train = int(len(cleaned) * 0.9) 
     train, validation = cleaned[:n_train], cleaned[n_train:]
 
     train_ds = Dataset.from_dict(dict(story=train))
@@ -46,8 +43,8 @@ def train_tokenizer(vocab_size=4096):
     )
 
     # The tokenizer itself, being a WordPiece tokenizer, which is generally smaller than a byte pair encoding
-    tokenizer = Tokenizer(WordPiece(unk_token="[UNK]"))
-    tokenizer.pre_tokenizer = pre_tokenizer
+    tokenizer = Tokenizer(WordPiece(unk_token="[UNK]")) # pyright: ignore
+    tokenizer.pre_tokenizer = pre_tokenizer # pyright: ignore
 
     print("training tokenizer...")
     # Train the tokenizer
