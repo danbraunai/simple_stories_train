@@ -185,7 +185,7 @@ def create_data_loader(
             dataset,  # type: ignore
             tokenizer,
             max_length=dataset_config.n_ctx,
-            add_bos_token=True,
+            add_bos_token=False, # Adding BOS token is broken
         )
 
     # Note that a pre-tokenized dataset was shuffled when generated
@@ -193,6 +193,6 @@ def create_data_loader(
     loader = DataLoader[Any](
         torch_dataset,  # type: ignore
         batch_size=batch_size,
-        shuffle=False,
+        shuffle=False
     )
     return loader, tokenizer

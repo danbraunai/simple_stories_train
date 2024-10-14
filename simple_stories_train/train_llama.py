@@ -789,7 +789,7 @@ if __name__ == "__main__":
         dataset_name=args.input_bin,
         is_tokenized=False,
         tokenizer_file_path="simple_stories_train/tokenizer/stories-3072.json",
-        streaming=False,
+        streaming=True,
         split="train",
         n_ctx=T,
         seed=None,
@@ -943,7 +943,7 @@ if __name__ == "__main__":
                 # addition of gradients corresponds to a SUM in the objective, but
                 # instead of a SUM we want MEAN, so we scale the loss here
                 loss = loss / grad_accum_steps
-                lossf += loss.item()  # keep track of the mean loss
+                lossf += loss.item()  # this was .detach() before, and I don't know why
             # backward pass
             if not args.inference_only:
                 loss.backward()
