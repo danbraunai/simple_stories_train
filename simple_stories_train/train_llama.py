@@ -63,7 +63,7 @@ from torch.distributed.optim import ZeroRedundancyOptimizer
 from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from simple_stories_train.utils import (
+from utils import (
     init_wandb,
     is_checkpoint_step,
     log_generations,
@@ -1036,7 +1036,7 @@ if __name__ == "__main__":
                 # addition of gradients corresponds to a SUM in the objective, but
                 # instead of a SUM we want MEAN, so we scale the loss here
                 loss = loss / grad_accum_steps
-                lossf += loss.detach()  # keep track of the mean loss
+                lossf += loss.item()  # keep track of the mean loss
             # backward pass
             if not args.inference_only:
                 loss.backward()

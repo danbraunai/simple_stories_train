@@ -4,7 +4,6 @@ from typing import Any
 
 import torch
 import wandb
-from dotenv import load_dotenv
 from torch import nn
 
 
@@ -37,7 +36,6 @@ def save_model_and_config(save_dir: Path, model: nn.Module, step: int) -> None:
 
 
 def init_wandb(config: Any, project: str) -> None:
-    load_dotenv(override=True)
     wandb.init(
         project=project,
         config=config,

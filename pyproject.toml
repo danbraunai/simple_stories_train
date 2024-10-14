@@ -15,8 +15,7 @@ dependencies = [
     "ipykernel",
     "jaxtyping",
     "tiktoken",
-    "transformers",
-    "python-dotenv"
+    "transformers"
 ]
 
 [project.optional-dependencies]
