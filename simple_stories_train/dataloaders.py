@@ -3,6 +3,7 @@ from typing import Any
 import numpy as np
 import torch
 from datasets import Dataset, IterableDataset, load_dataset
+from datasets.distributed import split_dataset_by_node
 from numpy.typing import NDArray
 from pydantic import BaseModel
 from tokenizers import Tokenizer
@@ -22,8 +23,8 @@ class DatasetConfig(BaseModel):
     n_ctx: int
     seed: int | None = None
     column_name: str = "input_ids"
-    ddp_rank: int | None = None
-    ddp_world_size: int | None = None
+    ddp_rank: int = 0
+    ddp_world_size: int = 1
     """The name of the column in the dataset that contains the data (tokenized or non-tokenized).
     Typically 'input_ids' for datasets stored with e2e_sae/scripts/upload_hf_dataset.py, or "tokens"
     for datasets tokenized in TransformerLens (e.g. NeelNanda/pile-10k)."""
@@ -167,7 +168,8 @@ def create_data_loader(
         dataset = dataset.shuffle(seed=seed, buffer_size=buffer_size)
     else:
         dataset = dataset.shuffle(seed=seed)
-
+    dataset = split_dataset_by_node(dataset, dataset_config.ddp_rank, dataset_config.ddp_world_size) # type: ignore
+    
     tokenizer = Tokenizer.from_file(dataset_config.tokenizer_file_path)
     tokenizer.add_special_tokens(["[BOS]", "[EOS]"]) # Making sure the tokenizer has these special tokens, candidate for removal
 
