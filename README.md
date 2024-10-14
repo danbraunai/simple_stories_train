@@ -27,12 +27,7 @@ make test-all  # Run all tests
 ```
 
 ## Usage
-First, download the TinyShakespeare dataset:
-```bash
-python simple_stories_train/tinyshakespeare.py
-```
-
-Then, train llama on it:
-`python simple_stories_train/train_llama.py --model d12 --input_bin simple_stories_train/tinyshakespeare/tiny_shakespeare_val.bin`
+Training a simple model:
+`python simple_stories_train/train_llama.py --model d2 --sequence_length 1024 --total_batch_size=4096`
 
 You may be asked to enter your wandb API key. You can find it in your [wandb account settings](https://wandb.ai/settings). Alternatively, to avoid entering your API key on program execution, you can set the environment variable `WANDB_API_KEY` to your API key.
