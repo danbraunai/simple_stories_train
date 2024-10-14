@@ -169,6 +169,8 @@ def create_data_loader(
         dataset = dataset.shuffle(seed=seed)
 
     tokenizer = Tokenizer.from_file(dataset_config.tokenizer_file_path)
+    tokenizer.add_special_tokens(["[BOS]", "[EOS]"]) # Making sure the tokenizer has these special tokens, candidate for removal
+
     torch_dataset: Dataset
     if dataset_config.is_tokenized:
         torch_dataset = dataset.with_format("torch")  # type: ignore
@@ -185,7 +187,7 @@ def create_data_loader(
             dataset,  # type: ignore
             tokenizer,
             max_length=dataset_config.n_ctx,
-            add_bos_token=False, # Adding BOS token is broken
+            add_bos_token=True,
         )
 
     # Note that a pre-tokenized dataset was shuffled when generated
