@@ -48,6 +48,7 @@ def tokenize_and_concatenate(
     column_name: str = "story",
     add_bos_token: bool = False,
     num_proc: int = 10,
+    to_lower: bool = True,
 ) -> Dataset:
     """Helper function to tokenizer and concatenate a dataset of text. This converts the text to
     tokens, concatenates them (separated by EOS tokens) and then reshapes them into a 2D array of
@@ -105,6 +106,8 @@ def tokenize_and_concatenate(
         chunks = [full_text[i * chunk_length : (i + 1) * chunk_length] for i in range(num_chunks)]
 
         # Tokenize the chunks using the Tokenizer library
+        if to_lower:
+            chunks = [chunk.lower().replace("[eos]", "[EOS]") for chunk in chunks]
         tokens = [
             tokenizer.encode(chunk).ids for chunk in chunks
         ]  # Get token IDs for each chunk
@@ -171,7 +174,6 @@ def create_data_loader(
     dataset = split_dataset_by_node(dataset, dataset_config.ddp_rank, dataset_config.ddp_world_size) # type: ignore
     
     tokenizer = Tokenizer.from_file(dataset_config.tokenizer_file_path)
-    tokenizer.add_special_tokens(["[BOS]", "[EOS]"]) # Making sure the tokenizer has these special tokens, candidate for removal
 
     torch_dataset: Dataset
     if dataset_config.is_tokenized:
@@ -189,7 +191,7 @@ def create_data_loader(
             dataset,  # type: ignore
             tokenizer,
             max_length=dataset_config.n_ctx,
-            add_bos_token=True,
+            add_bos_token=False,
         )
 
     loader = DataLoader[Any](

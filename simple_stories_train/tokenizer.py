@@ -79,7 +79,7 @@ def test_tokenizer(filepath : str, dataset : str = "lennart-finke/SimpleStories"
 
     loader, tokenizer = create_data_loader(dataset_config, batch_size, buffer_size, global_seed)
     batch = next(iter(loader))
-    words = tokenizer.decode_batch(batch["input_ids"].tolist())
+    words = tokenizer.decode_batch(batch["input_ids"].tolist(), skip_special_tokens=False)
     print(words)
 
 def load_tokenizer(vocab_size=3072) -> Tokenizer:
