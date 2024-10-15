@@ -1,5 +1,3 @@
-import os
-
 import torch
 
 from simple_stories_train.dataloaders import DatasetConfig, create_data_loader
