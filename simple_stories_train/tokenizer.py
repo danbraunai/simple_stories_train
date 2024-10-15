@@ -15,8 +15,8 @@ from tokenizers.trainers import WordPieceTrainer
 OUT_DIR = Path("tokenizers")
 
 
-def clean_dataset():
-    dataset = load_dataset("lennart-finke/SimpleStories")
+def clean_dataset(dataset="lennart-finke/SimpleStories") -> DatasetDict:
+    dataset = load_dataset(dataset)
     trans = str.maketrans(
         {"\u201d": '"', "\u201c": '"', "\u2019": "'", "\u2018": "'", "\u2014": "-", "\u2026": "..."}
     )
@@ -34,8 +34,8 @@ def clean_dataset():
     return DatasetDict({"train": train_ds, "validation": validation_ds})
 
 
-def train_tokenizer(vocab_size=4096):
-    data = clean_dataset()["train"]["story"]
+def train_tokenizer(vocab_size=4096, dataset="lennart-finke/SimpleStories") -> None:
+    data = clean_dataset(dataset=dataset)["train"]["story"]
 
     # Split almost all types into individual tokens
     pre_tokenizer = pre_tokenizers.Sequence(
@@ -74,7 +74,7 @@ def print_split_words(story_tokens: list[str]) -> None:
 
 def analysis(vocab_size=3072) -> None:
     tokenizer = load_tokenizer(vocab_size)
-    stories = clean_dataset()["validation"]["story"]
+    stories = clean_dataset(dataset="lennart-finke/SimpleStories")["validation"]["story"]
     tokenized_stories = [tokenizer.encode(story).tokens for story in stories]
 
     all_tokens = list(chain.from_iterable(tokenized_stories))

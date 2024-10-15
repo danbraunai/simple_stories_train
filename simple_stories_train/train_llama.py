@@ -813,7 +813,6 @@ if __name__ == "__main__":
         buffer_size=1000,
         global_seed=0
     )
-    val_loader = iter(val_loader)
 
     # -------------------------------------------------------------------------
     # main training loop
@@ -875,11 +874,11 @@ if __name__ == "__main__":
         # once in a while evaluate the validation dataset
         if (args.val_loss_every > 0 and (step % args.val_loss_every == 0 or last_step)):
             model.eval()
-            # val_loader.reset() # What was reset good for again?
+            val_loader_iter = iter(val_loader) # By creating the iterator anew, we sample the same data each time
             with torch.no_grad():
                 val_loss = 0.0
                 for _ in range(args.val_max_steps):
-                    bat = next(val_loader)
+                    bat = next(val_loader_iter)
                     x = bat[-1:].view(B, T)  # inputs
                     y = bat[1:].view(B, T)  # targets
                     x, y = x.to(device), y.to(device)
@@ -943,7 +942,7 @@ if __name__ == "__main__":
                 # addition of gradients corresponds to a SUM in the objective, but
                 # instead of a SUM we want MEAN, so we scale the loss here
                 loss = loss / grad_accum_steps
-                lossf += loss.item()  # this was .detach() before, and I don't know why
+
             # backward pass
             if not args.inference_only:
                 loss.backward()

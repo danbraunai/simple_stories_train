@@ -192,8 +192,6 @@ def create_data_loader(
             add_bos_token=True,
         )
 
-    # Note that a pre-tokenized dataset was shuffled when generated
-    # see e2e_sae.scripts.upload_hf_dataset.TextDataset.__init__
     loader = DataLoader[Any](
         torch_dataset,  # type: ignore
         batch_size=batch_size,
