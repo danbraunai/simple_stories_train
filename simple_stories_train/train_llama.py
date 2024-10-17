@@ -1,5 +1,5 @@
 """
-Reference code for GPT-2 training and inference.
+Reference code for Llama training and inference.
 Will save the model weights into files, to be read from C as initialization.
 
 References:
@@ -41,7 +41,6 @@ SOFTWARE.
 """
 
 import argparse
-import glob
 import inspect
 import math
 import os
@@ -56,6 +55,7 @@ import torch
 import torch._inductor.config as config
 import torch.distributed as dist
 import torch.nn as nn
+from dataloaders import DatasetConfig, create_data_loader
 from jaxtyping import Float, Int
 from torch import Tensor
 from torch.distributed import destroy_process_group, init_process_group
@@ -71,9 +71,6 @@ from utils import (
     print0,
     save_model_and_config,
 )
-
-# -----------------------------------------------------------------------------
-# PyTorch nn.Module definitions for the Llama model
 
 
 # using a global to toggle flash-attention
@@ -562,98 +559,6 @@ class Llama(nn.Module):
 
         return idx
 
-
-# -----------------------------------------------------------------------------
-# Our own simple Distributed Data Loader
-
-
-def _peek_data_shard(filename: str) -> int:
-    # only reads the header, returns header data
-    with open(filename, "rb") as f:
-        # first read the header, which is 256 int32 integers (4 bytes each)
-        header = np.frombuffer(f.read(256 * 4), dtype=np.int32)
-    if header[0] != 20240520:
-        print("ERROR: magic number mismatch in the data .bin file!")
-        print("---> HINT: Are you passing in a correct file with --input_bin?")
-        print(
-            "---> HINT: Dataset encoding changed recently, re-run data prepro or refer again to README"
-        )
-        print("---> HINT: For example re-run: `python dev/data/tinyshakespeare.py`, then re-try")
-        exit(1)
-    assert header[1] == 1, "unsupported version"
-    ntok = header[2]  # number of tokens (claimed)
-    return ntok  # for now just return the number of tokens
-
-
-def _load_data_shard(filename: str):
-    with open(filename, "rb") as f:
-        # first read the header, which is 256 int32 integers (4 bytes each)
-        header = np.frombuffer(f.read(256 * 4), dtype=np.int32)
-        assert header[0] == 20240520, "magic number mismatch in the data .bin file"
-        assert header[1] == 1, "unsupported version"
-        ntok = header[2]  # number of tokens (claimed)
-        # the rest of it are tokens, stored as uint16
-        tokens = np.frombuffer(f.read(), dtype=np.uint16)
-    assert len(tokens) == ntok, "number of tokens read does not match header?"
-    return tokens
-
-
-class DistributedDataLoader:
-    def __init__(
-        self, filename_pattern: str, B: int, T: int, process_rank: int, num_processes: int
-    ):
-        self.process_rank = process_rank
-        self.num_processes = num_processes
-        self.B = B
-        self.T = T
-
-        # glob files that match the pattern
-        self.files = sorted(glob.glob(filename_pattern))
-        assert (
-            len(self.files) > 0
-        ), f"did not find any files that match the pattern {filename_pattern}"
-
-        # load and validate all data shards, count number of tokens in total
-        ntok_total = 0
-        for fname in self.files:
-            shard_ntok = _peek_data_shard(fname)
-            assert shard_ntok >= num_processes * B * T + 1
-            ntok_total += shard_ntok
-        self.ntok_total = ntok_total
-        print0(f"DataLoader: total number of tokens: {ntok_total:,} across {len(self.files)} files")
-
-        # kick things off
-        self.current_shard = None
-        self.reset()
-
-    def reset(self):
-        # we're being a bit clever here: if we already had shard 0 loaded,
-        # then don't do the work to reload it, just reset the pointer
-        if self.current_shard != 0:
-            self.current_shard = 0
-            self.tokens = _load_data_shard(self.files[self.current_shard])
-        self.current_position = self.process_rank * self.B * self.T
-
-    def advance(self):  # advance to next data shard
-        self.current_shard = (self.current_shard + 1) % len(self.files)  # type:ignore
-        self.current_position = self.process_rank * self.B * self.T
-        self.tokens = _load_data_shard(self.files[self.current_shard])
-
-    def next_batch(self):
-        B = self.B
-        T = self.T
-        buf = self.tokens[self.current_position : self.current_position + B * T + 1]
-        buf = torch.tensor(buf.astype(np.int32), dtype=torch.long)
-        x = (buf[:-1]).view(B, T)  # inputs
-        y = (buf[1:]).view(B, T)  # targets
-        # advance the start pointer in current shard
-        self.current_position += B * T * self.num_processes
-        # if loading the next batch would be out of bounds advance the shard
-        if self.current_position + (B * T * self.num_processes + 1) > len(self.tokens):
-            self.advance()
-        return x, y
-
-
 if __name__ == "__main__":
     print0(f"Running pytorch {torch.__version__}")
 
@@ -664,8 +569,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--input_bin",
         type=str,
-        default="simple_stories_train/tinyshakespeare/tiny_shakespeare_val.bin",
-        help="input .bin to train on",
+        default="lennart-finke/SimpleStories",
     )
     parser.add_argument(
         "--input_val_bin", type=str, default="", help="input .bin to eval validation loss on"
@@ -722,10 +626,6 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--sample_every", type=int, default=0, help="how often to sample from the model?"
-    )
-    # debugging
-    parser.add_argument(
-        "--overfit_single_batch", type=int, default=1, help="overfit just one batch of data"
     )
     # numerics
     parser.add_argument("--tensorcores", type=int, default=0, help="use tensorcores")
@@ -798,7 +698,7 @@ if __name__ == "__main__":
 
     # calculate gradient accumulation from the desired total batch size and the current run configuration
     tokens_per_fwdbwd = B * T * ddp_world_size
-    assert args.total_batch_size % tokens_per_fwdbwd == 0
+    assert args.total_batch_size % tokens_per_fwdbwd == 0, f"Mismatch between batch size and tokens {args.total_batch_size} % {tokens_per_fwdbwd} != 0"
     grad_accum_steps = args.total_batch_size // tokens_per_fwdbwd
     print0(f"total desired batch size: {args.total_batch_size}")
     print0(f"=> calculated gradient accumulation steps: {grad_accum_steps}")
@@ -836,7 +736,7 @@ if __name__ == "__main__":
         model_config = {
             "d2": LlamaConfig(
                 block_size=1024,
-                vocab_size=50257,
+                vocab_size=50257, # TODO: Make this depend on the tokenizer vocab size
                 n_layer=2,
                 n_head=2,
                 n_embd=12,
@@ -892,14 +792,35 @@ if __name__ == "__main__":
         print0("compiling the model...")
         model: nn.Module = torch.compile(model)  # type: ignore[reportArgumentType]
 
-    # -------------------------------------------------------------------------
-    # Our own version of a simple DistributedDataLoader
-
     # load tokens
-    train_loader = DistributedDataLoader(args.input_bin, B, T, ddp_rank, ddp_world_size)
-    val_loader = None
-    if args.input_val_bin:
-        val_loader = DistributedDataLoader(args.input_val_bin, B, T, ddp_rank, ddp_world_size)
+    dataset_config = DatasetConfig(
+        dataset_name=args.input_bin,
+        is_tokenized=False,
+        tokenizer_file_path="simple_stories_train/tokenizer/stories-3072.json",
+        streaming=True,
+        split="train",
+        n_ctx=T,
+        seed=None,
+        column_name="story",
+        ddp_rank=ddp_rank,
+        ddp_world_size=ddp_world_size
+    )
+
+    train_loader, tokenizer = create_data_loader(
+        dataset_config=dataset_config,
+        batch_size=B,
+        buffer_size=1000,
+        global_seed=0
+    )
+    train_loader = iter(train_loader) # Is this the right way to sample from a Pytorch DataLoader?
+    
+    dataset_config.split = "train" # TODO: Change this to "val" when we have a validation dataset
+    val_loader, tokenizer = create_data_loader(
+        dataset_config=dataset_config,
+        batch_size=B,
+        buffer_size=1000,
+        global_seed=0
+    )
 
     # -------------------------------------------------------------------------
     # main training loop
@@ -961,15 +882,15 @@ if __name__ == "__main__":
         last_step = step == args.num_iterations
 
         # once in a while evaluate the validation dataset
-        if (args.val_loss_every > 0 and (step % args.val_loss_every == 0 or last_step)) and (
-            val_loader is not None
-        ):
+        if (args.val_loss_every > 0 and (step % args.val_loss_every == 0 or last_step)):
             model.eval()
-            val_loader.reset()
+            val_loader_iter = iter(val_loader) # By creating the iterator anew, we sample the same data each time
             with torch.no_grad():
                 val_loss = 0.0
                 for _ in range(args.val_max_steps):
-                    x, y = val_loader.next_batch()
+                    bat = next(val_loader_iter)
+                    x = bat[-1:].view(B, T)  # inputs
+                    y = bat[1:].view(B, T)  # targets
                     x, y = x.to(device), y.to(device)
                     _, loss = model(x, y, return_logits=False)
                     val_loss += loss.item()
@@ -1012,16 +933,16 @@ if __name__ == "__main__":
         # --------------- TRAINING SECTION BEGIN -----------------
         model.train()
         optimizer.zero_grad(set_to_none=True)
-        # if we are trying to overfit a single batch, we reset the loader here
-        if args.overfit_single_batch:
-            train_loader.reset()
+
         # micro-batch loop where we do gradient accumulation to reach desired total batch size
         lossf = Tensor(
             [0.0]
         )  # for getting the mean loss (as simple float) over the accumulation steps
         for micro_step in range(grad_accum_steps):
             # fetch a batch
-            x, y = train_loader.next_batch()
+            bat = next(train_loader)["input_ids"].to(torch.int)
+            x = bat.view(B, T)[:,:-1]  # inputs
+            y = bat.view(B, T)[:,1:]  # targets
             x, y = x.to(device), y.to(device)
             if ddp:
                 # we want only the last micro-step to sync grads in a DDP model
@@ -1037,6 +958,7 @@ if __name__ == "__main__":
                 # instead of a SUM we want MEAN, so we scale the loss here
                 loss = loss / grad_accum_steps
                 lossf += loss.item()  # keep track of the mean loss
+
             # backward pass
             if not args.inference_only:
                 loss.backward()
