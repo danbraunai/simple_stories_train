@@ -4,6 +4,7 @@ from typing import Any
 
 import torch
 import wandb
+import yaml
 from torch import nn
 
 
@@ -21,7 +22,13 @@ def is_checkpoint_step(step: int) -> bool:
     return (0 < step < 1000 and (step & (step - 1)) == 0) or step % 1000 == 0
 
 
-def save_model_and_config(save_dir: Path, model: nn.Module, step: int) -> None:
+def save_model_and_config(
+    save_dir: Path,
+    model: nn.Module,
+    config_dict: dict[str, Any],
+    step: int,
+    config_filename: str = "final_config.yaml",
+) -> None:
     """Save the model to disk. Also save the config file if it doesn't exist.
 
     Args:
@@ -30,6 +37,8 @@ def save_model_and_config(save_dir: Path, model: nn.Module, step: int) -> None:
         step: The current step (used in the model filename).
     """
     save_dir.mkdir(parents=True, exist_ok=True)
+    with open(save_dir / config_filename, "w") as f:
+        yaml.dump(config_dict, f)
     model_file = save_dir / f"model_step_{step}.pt"
     torch.save(model.state_dict(), model_file)
     print0(f"Saved model to {model_file}")
