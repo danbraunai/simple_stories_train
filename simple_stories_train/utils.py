@@ -29,7 +29,7 @@ def save_model_and_config(
     step: int,
     config_filename: str = "final_config.yaml",
 ) -> None:
-    """Save the model to disk. Also save the config file if it doesn't exist.
+    """Save the model to disk and wandb. Also save the config file if it doesn't exist.
 
     Args:
         save_dir: The directory to save the model and config to.
@@ -39,9 +39,13 @@ def save_model_and_config(
     save_dir.mkdir(parents=True, exist_ok=True)
     with open(save_dir / config_filename, "w") as f:
         yaml.dump(config_dict, f)
-    model_file = save_dir / f"model_step_{step}.pt"
+    model_file_name = f"model_step_{step}.pt"
+    model_file = save_dir / model_file_name
     torch.save(model.state_dict(), model_file)
     print0(f"Saved model to {model_file}")
+    if config_dict.get("wandb_project"):
+        wandb.save(str(model_file), policy="now", base_path=save_dir)
+        print0(f"Saved model to wandb: {str(model_file_name)}")
 
 
 def init_wandb(config: Any, project: str) -> None:
