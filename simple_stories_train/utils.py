@@ -37,8 +37,10 @@ def save_model_and_config(
         step: The current step (used in the model filename).
     """
     save_dir.mkdir(parents=True, exist_ok=True)
-    with open(save_dir / config_filename, "w") as f:
-        yaml.dump(config_dict, f)
+    config_file = save_dir / config_filename
+    if not config_file.exists():
+        with open(config_file, "w") as f:
+            yaml.dump(config_dict, f)
     model_file_name = f"model_step_{step}.pt"
     model_file = save_dir / model_file_name
     torch.save(model.state_dict(), model_file)
