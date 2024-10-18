@@ -47,6 +47,7 @@ import os
 import time
 from contextlib import nullcontext
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -62,7 +63,6 @@ from torch.distributed import destroy_process_group, init_process_group
 from torch.distributed.optim import ZeroRedundancyOptimizer
 from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
-
 from utils import (
     init_wandb,
     is_checkpoint_step,
@@ -860,7 +860,8 @@ if __name__ == "__main__":
     checkpoints_dir = None
     output_dir = None
     if args.output_dir:
-        output_dir = Path(args.output_dir)
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        output_dir = Path(args.output_dir) / f"{timestamp}"
         output_dir.mkdir(parents=True, exist_ok=True)
         logfile = output_dir / "main.log"
         # create the log file "main.log" inside it, and wipe it clean
@@ -870,7 +871,7 @@ if __name__ == "__main__":
         # set our checkpoints directory and save off the initilized model
         checkpoints_dir = output_dir / "checkpoints"
         checkpoints_dir.mkdir(parents=True, exist_ok=True)
-        save_model_and_config(checkpoints_dir, raw_model, step=0)
+        save_model_and_config(checkpoints_dir, raw_model, args.__dict__, step=0)
 
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()
@@ -1001,7 +1002,7 @@ if __name__ == "__main__":
                 f.write("s:%d trl:%f\n" % (step, lossf))
 
         if checkpoints_dir is not None and is_checkpoint_step(step):
-            save_model_and_config(checkpoints_dir, raw_model, step=step)
+            save_model_and_config(checkpoints_dir, raw_model, args.__dict__, step=step)
 
         # keep track of smooth timings, last 20 iterations
         if step > 1 and step > args.num_iterations - 20:
