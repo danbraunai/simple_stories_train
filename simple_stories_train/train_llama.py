@@ -62,7 +62,6 @@ from torch.distributed import destroy_process_group, init_process_group
 from torch.distributed.optim import ZeroRedundancyOptimizer
 from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
-
 from utils import (
     init_wandb,
     is_checkpoint_step,
@@ -71,7 +70,6 @@ from utils import (
     print0,
     save_model_and_config,
 )
-
 
 # using a global to toggle flash-attention
 FLASH = 0
@@ -106,16 +104,19 @@ class CausalSelfAttention(nn.Module):
 
         if self.use_grouped_query_attention:
             self.repeat_kv_heads = config.n_head // config.n_key_value_heads
-            self.kv_attn = nn.Linear(
-                config.n_embd, 2 * config.n_embd // self.repeat_kv_heads, bias=config.attn_bias
+            self.k_proj = nn.Linear(
+                config.n_embd, config.n_embd // self.repeat_kv_heads, bias=config.attn_bias
             )
-            self.q_attn = nn.Linear(config.n_embd, config.n_embd, bias=config.attn_bias)
+            self.v_proj = nn.Linear(
+                config.n_embd, config.n_embd // self.repeat_kv_heads, bias=config.attn_bias
+            )
+            self.q_proj = nn.Linear(config.n_embd, config.n_embd, bias=config.attn_bias)
         else:
             self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, bias=config.attn_bias)
 
         # output projection
-        self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=config.attn_bias)
-        self.c_proj.LLMC_RESIDUAL_SCALE_FLAG = 1  # type:ignore
+        self.o_proj = nn.Linear(config.n_embd, config.n_embd, bias=config.attn_bias)
+        self.o_proj.LLMC_RESIDUAL_SCALE_FLAG = 1  # type:ignore
         # regularization
         self.n_head = config.n_head
         self.n_embd = config.n_embd
@@ -240,8 +241,9 @@ class CausalSelfAttention(nn.Module):
 
         if self.use_grouped_query_attention:
             # calculate query, key, values for all heads in batch and move head forward to be the batch dim
-            k, v = self.kv_attn(x).split(self.n_embd // self.repeat_kv_heads, dim=2)
-            q = self.q_attn(x)
+            k = self.k_proj(x)
+            v = self.v_proj(x)
+            q = self.q_proj(x)
             assert k.shape[-1] == v.shape[-1] == q.shape[-1] // self.repeat_kv_heads
 
             # Repeat k and v for each head
@@ -272,7 +274,7 @@ class CausalSelfAttention(nn.Module):
             y.transpose(1, 2).contiguous().view(B, T, C)
         )  # re-assemble all head outputs side by side
         # output projection
-        y = self.c_proj(y)
+        y = self.o_proj(y)
         return y
 
 
@@ -312,14 +314,14 @@ class LlamaRMSNorm(nn.Module):
 class Block(nn.Module):
     def __init__(self, config: LlamaConfig):
         super().__init__()
-        self.rms_1 = LlamaRMSNorm(config.n_embd)
-        self.attn = CausalSelfAttention(config)
-        self.rms_2 = LlamaRMSNorm(config.n_embd)
+        self.input_layernorm = LlamaRMSNorm(config.n_embd)
+        self.self_attn = CausalSelfAttention(config)
+        self.post_attention_layernorm = LlamaRMSNorm(config.n_embd)
         self.mlp = SwiGLUMLP(config)
 
     def forward(self, x: Float[Tensor, "... pos d_model"]) -> Float[Tensor, "... pos d_model"]:
-        x = x + self.attn(self.rms_1(x))
-        x = x + self.mlp(self.rms_2(x))
+        x = x + self.self_attn(self.input_layernorm(x))
+        x = x + self.mlp(self.post_attention_layernorm(x))
         return x
 
 
@@ -328,17 +330,17 @@ class Llama(nn.Module):
         super().__init__()
         self.config = config
 
-        self.transformer = nn.ModuleDict(
+        self.model = nn.ModuleDict(
             dict(
-                wte=nn.Embedding(config.vocab_size, config.n_embd),
-                h=nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
-                rms_f=LlamaRMSNorm(config.n_embd),
+                embed_tokens=nn.Embedding(config.vocab_size, config.n_embd),
+                layers=nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+                norm=LlamaRMSNorm(config.n_embd),
             )
         )
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         # don't init this one, we will tie weights
         self.lm_head.LLMC_SKIP_INIT = 1  # type:ignore
-        self.transformer.wte.weight = (
+        self.model.embed_tokens.weight = (
             self.lm_head.weight
         )  # https://paperswithcode.com/method/weight-tying
 
@@ -355,8 +357,8 @@ class Llama(nn.Module):
                 if not hasattr(module, "LLMC_RESIDUAL_SCALE_FLAG")
                 else 0.02 / math.sqrt(2 * self.config.n_layer)
             )
-            # we want to skip initializing lm_head, which shares parameters with wte
-            # and wte was already initialized down below during the Embedding init
+            # we want to skip initializing lm_head, which shares parameters with embed_tokens
+            # and embed_tokens was already initialized down below during the Embedding init
             if not hasattr(module, "LLMC_SKIP_INIT"):
                 torch.nn.init.normal_(module.weight, mean=0.0, std=std, generator=self.init_rng)
             if module.bias is not None:  # type: ignore
@@ -377,17 +379,18 @@ class Llama(nn.Module):
         ), f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
 
         # forward the GPT model itself
-        tok_emb = self.transformer.wte(idx)  # token embeddings of shape (b, t, n_embd)
+        tok_emb = self.model.embed_tokens(idx)  # token embeddings of shape (b, t, n_embd)
         # x = tok_emb + pos_emb
         x = tok_emb
 
-        for block in self.transformer.h:
+        for block in self.model.layers:
             x = block(x)
-        x = self.transformer.rms_f(x)
+        x = self.model.norm(x)
 
         if targets is not None:
             # if we are given some desired targets also calculate the loss
             logits = self.lm_head(x)
+            targets = targets.long()
             loss = F.cross_entropy(
                 logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1
             )
@@ -559,6 +562,7 @@ class Llama(nn.Module):
 
         return idx
 
+
 if __name__ == "__main__":
     print0(f"Running pytorch {torch.__version__}")
 
@@ -698,7 +702,9 @@ if __name__ == "__main__":
 
     # calculate gradient accumulation from the desired total batch size and the current run configuration
     tokens_per_fwdbwd = B * T * ddp_world_size
-    assert args.total_batch_size % tokens_per_fwdbwd == 0, f"Mismatch between batch size and tokens {args.total_batch_size} % {tokens_per_fwdbwd} != 0"
+    assert (
+        args.total_batch_size % tokens_per_fwdbwd == 0
+    ), f"Mismatch between batch size and tokens {args.total_batch_size} % {tokens_per_fwdbwd} != 0"
     grad_accum_steps = args.total_batch_size // tokens_per_fwdbwd
     print0(f"total desired batch size: {args.total_batch_size}")
     print0(f"=> calculated gradient accumulation steps: {grad_accum_steps}")
@@ -736,7 +742,7 @@ if __name__ == "__main__":
         model_config = {
             "d2": LlamaConfig(
                 block_size=1024,
-                vocab_size=50257, # TODO: Make this depend on the tokenizer vocab size
+                vocab_size=50257,  # TODO: Make this depend on the tokenizer vocab size
                 n_layer=2,
                 n_head=2,
                 n_embd=12,
@@ -803,23 +809,17 @@ if __name__ == "__main__":
         seed=None,
         column_name="story",
         ddp_rank=ddp_rank,
-        ddp_world_size=ddp_world_size
+        ddp_world_size=ddp_world_size,
     )
 
     train_loader, tokenizer = create_data_loader(
-        dataset_config=dataset_config,
-        batch_size=B,
-        buffer_size=1000,
-        global_seed=0
+        dataset_config=dataset_config, batch_size=B, buffer_size=1000, global_seed=0
     )
-    train_loader = iter(train_loader) # Is this the right way to sample from a Pytorch DataLoader?
-    
-    dataset_config.split = "train" # TODO: Change this to "val" when we have a validation dataset
+    train_loader = iter(train_loader)  # Is this the right way to sample from a Pytorch DataLoader?
+
+    dataset_config.split = "train"  # TODO: Change this to "val" when we have a validation dataset
     val_loader, tokenizer = create_data_loader(
-        dataset_config=dataset_config,
-        batch_size=B,
-        buffer_size=1000,
-        global_seed=0
+        dataset_config=dataset_config, batch_size=B, buffer_size=1000, global_seed=0
     )
 
     # -------------------------------------------------------------------------
@@ -882,9 +882,11 @@ if __name__ == "__main__":
         last_step = step == args.num_iterations
 
         # once in a while evaluate the validation dataset
-        if (args.val_loss_every > 0 and (step % args.val_loss_every == 0 or last_step)):
+        if args.val_loss_every > 0 and (step % args.val_loss_every == 0 or last_step):
             model.eval()
-            val_loader_iter = iter(val_loader) # By creating the iterator anew, we sample the same data each time
+            val_loader_iter = iter(
+                val_loader
+            )  # By creating the iterator anew, we sample the same data each time
             with torch.no_grad():
                 val_loss = 0.0
                 for _ in range(args.val_max_steps):
@@ -941,8 +943,8 @@ if __name__ == "__main__":
         for micro_step in range(grad_accum_steps):
             # fetch a batch
             bat = next(train_loader)["input_ids"].to(torch.int)
-            x = bat.view(B, T)[:,:-1]  # inputs
-            y = bat.view(B, T)[:,1:]  # targets
+            x = bat.view(B, T)[:, :-1]  # inputs
+            y = bat.view(B, T)[:, 1:]  # targets
             x, y = x.to(device), y.to(device)
             if ddp:
                 # we want only the last micro-step to sync grads in a DDP model
