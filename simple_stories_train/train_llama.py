@@ -131,11 +131,12 @@ class CausalSelfAttention(nn.Module):
             torch.tril(torch.ones(config.block_size, config.block_size)).view(
                 1, 1, config.block_size, config.block_size
             ),
+            persistent=False,
         )
 
         sin, cos = self.calculate_sin_cos_rotary(self.rotary_dim, self.n_ctx, base=self.rotary_base)
-        self.register_buffer("rotary_sin", sin)
-        self.register_buffer("rotary_cos", cos)
+        self.register_buffer("rotary_sin", sin, persistent=False)
+        self.register_buffer("rotary_cos", cos, persistent=False)
 
     def calculate_sin_cos_rotary(
         self,
