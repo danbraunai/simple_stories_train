@@ -72,7 +72,6 @@ from utils import (
     save_model_and_config,
 )
 
-
 # using a global to toggle flash-attention
 FLASH = 0
 
@@ -388,6 +387,7 @@ class Llama(nn.Module):
         if targets is not None:
             # if we are given some desired targets also calculate the loss
             logits = self.lm_head(x)
+            targets = targets.long()
             loss = F.cross_entropy(
                 logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1
             )
@@ -642,6 +642,7 @@ if __name__ == "__main__":
     # python -> C bridge
     parser.add_argument("--write_tensors", type=int, default=1, help="write tensors to disk")
     # wandb settings
+    parser.add_argument("--wandb", type=int, default=0, help="use wandb?")
     parser.add_argument("--wandb_project", type=str, default="", help="wandb project name")
     args = parser.parse_args()
 
@@ -824,7 +825,8 @@ if __name__ == "__main__":
 
     # -------------------------------------------------------------------------
     # main training loop
-    init_wandb(args, args.wandb_project)
+    if args.wandb:
+        init_wandb(args, args.wandb_project)
 
     # here we wrap model into DDP container
     if ddp:
@@ -897,7 +899,8 @@ if __name__ == "__main__":
                     val_loss += loss.item()
                 val_loss /= args.val_max_steps
             # log to wandb
-            log_metrics(step, {"val_loss": val_loss})
+            if args.wandb:
+                log_metrics(step, {"val_loss": val_loss})
             # log to console and to file
             print0(f"val loss {val_loss}")
             if master_process and logfile is not None:
@@ -921,7 +924,8 @@ if __name__ == "__main__":
             print0(enc.decode(yg[0].tolist()))
             print0("---------------")
             # log to wandb
-            generations.append([step, enc.decode(yg[0].tolist())])
+            if args.wandb:
+                generations.append([step, enc.decode(yg[0].tolist())])
             log_generations(step, generations)
 
         # bit confusing: we want to make sure to eval and sample on 0th iteration
@@ -938,7 +942,7 @@ if __name__ == "__main__":
         # micro-batch loop where we do gradient accumulation to reach desired total batch size
         lossf = Tensor(
             [0.0]
-        )  # for getting the mean loss (as simple float) over the accumulation steps
+        ).to(device)  # for getting the mean loss (as simple float) over the accumulation steps
         for micro_step in range(grad_accum_steps):
             # fetch a batch
             bat = next(train_loader)["input_ids"].to(torch.int)
@@ -958,7 +962,7 @@ if __name__ == "__main__":
                 # addition of gradients corresponds to a SUM in the objective, but
                 # instead of a SUM we want MEAN, so we scale the loss here
                 loss = loss / grad_accum_steps
-                lossf += loss.item()  # keep track of the mean loss
+                lossf += loss.detach()  # keep track of the mean loss
 
             # backward pass
             if not args.inference_only:
@@ -989,13 +993,14 @@ if __name__ == "__main__":
             f"step {step:4d}/{args.num_iterations} | train loss {lossf:.6f} | norm {norm:.4f} | lr {lr:.2e} | ({(t1-t0)*1000:.2f} ms | {tokens_per_second:.0f} tok/s)"
         )
         # log to wandb
-        log_metrics(
-            step,
-            {
-                "train_loss": lossf,
-                "lr": lr,
-            },
-        )
+        if args.wandb:
+            log_metrics(
+                step,
+                {
+                    "train_loss": lossf,
+                    "lr": lr,
+                },
+            )
         # log to logile
         if master_process and logfile is not None:
             with open(logfile, "a") as f:

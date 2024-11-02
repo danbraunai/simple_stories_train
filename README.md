@@ -31,5 +31,8 @@ make test-all  # Run all tests
 Training a simple model:
 `python simple_stories_train/train_llama.py --model d2 --sequence_length 1024 --total_batch_size=4096`
 
+For a final model, we currently (intend to) run:
+`torchrun --standalone --nproc_per_node=8 simple_stories_train/train_llama.py --model d24 --sequence_length 1024 --total_batch_size=16448 --compile 1 --tensorcores=1 --dtype=bfloat16 --wandb 1`
+
 You may be asked to enter your wandb API key. You can find it in your [wandb account settings](https://wandb.ai/settings). Alternatively, to avoid entering your API key on program execution, you can set the environment variable `WANDB_API_KEY` to your API key, or put it in a
 `.env` file under the root of the repository.
