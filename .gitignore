@@ -3,6 +3,7 @@ gpt2_tokenizer.bin
 
 .vscode/settings.json
 
+weights/
 wandb/
 .data/
 .checkpoints/
