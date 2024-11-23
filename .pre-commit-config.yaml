@@ -15,7 +15,7 @@ repos:
         language: system
         types: [python]
         stages:
-          - commit
+          - pre-commit
 
       - id: ruff-lint
         name: Ruff lint
@@ -24,7 +24,7 @@ repos:
         language: system
         types: [python]
         stages:
-          - commit
+          - pre-commit
 
       - id: ruff-format
         name: Ruff format
@@ -32,4 +32,4 @@ repos:
         language: system
         types: [python]
         stages:
-          - commit
+          - pre-commit
