@@ -10,9 +10,6 @@
             "request": "launch",
             "program": "${workspaceFolder}/simple_stories_train/train_llama.py",
             "args": [
-                "--model", "d12",
-                "--input_bin", "${workspaceFolder}/simple_stories_train/tinyshakespeare/tiny_shakespeare_val.bin",
-                "--device", "cpu"
             ],
             "console": "integratedTerminal",
             "justMyCode": true,

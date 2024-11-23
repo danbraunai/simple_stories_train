@@ -6,13 +6,12 @@ This file is copied almost 1:1 from Nix Goldowsky-Dill's adaption of the tokeniz
 from itertools import chain
 from pathlib import Path
 
+from dataloaders import DatasetConfig, create_data_loader
 from datasets import Dataset, DatasetDict, load_dataset
 from tokenizers import Tokenizer, pre_tokenizers
 from tokenizers.models import WordPiece
 from tokenizers.pre_tokenizers import Digits, Punctuation, Whitespace
 from tokenizers.trainers import WordPieceTrainer
-
-from dataloaders import DatasetConfig, create_data_loader
 
 OUT_DIR = Path("tokenizers")
 
@@ -24,10 +23,10 @@ def clean_dataset(dataset="lennart-finke/SimpleStories") -> DatasetDict:
     )
     cleaned = [
         s.translate(trans).encode("ascii", "ignore").decode("ascii").lower()
-        for s in dataset["train"]["story"] # pyright: ignore
+        for s in dataset["train"]["story"]  # pyright: ignore
     ]
 
-    n_train = int(len(cleaned) * 0.9) 
+    n_train = int(len(cleaned) * 0.9)
     train, validation = cleaned[:n_train], cleaned[n_train:]
 
     train_ds = Dataset.from_dict(dict(story=train))
@@ -45,8 +44,8 @@ def train_tokenizer(vocab_size=4096, dataset="lennart-finke/SimpleStories") -> N
     )
 
     # The tokenizer itself, being a WordPiece tokenizer, which is generally smaller than a byte pair encoding
-    tokenizer = Tokenizer(WordPiece(unk_token="[UNK]")) # pyright: ignore
-    tokenizer.pre_tokenizer = pre_tokenizer # pyright: ignore
+    tokenizer = Tokenizer(WordPiece(unk_token="[UNK]"))  # pyright: ignore
+    tokenizer.pre_tokenizer = pre_tokenizer  # pyright: ignore
 
     print("training tokenizer...")
     # Train the tokenizer
@@ -55,13 +54,14 @@ def train_tokenizer(vocab_size=4096, dataset="lennart-finke/SimpleStories") -> N
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     tokenizer.save(f"{OUT_DIR}/stories-{vocab_size}.json")
 
-def test_tokenizer(filepath : str, dataset : str = "lennart-finke/SimpleStories") -> None:
+
+def test_tokenizer(filepath: str, dataset: str = "lennart-finke/SimpleStories") -> None:
     dataset_name = dataset
     split = "train"
 
     context_width = 512
     dataset_config = DatasetConfig(
-        dataset_name=dataset_name,
+        name=dataset_name,
         is_tokenized=False,
         tokenizer_file_path=filepath,
         streaming=True,
@@ -69,18 +69,19 @@ def test_tokenizer(filepath : str, dataset : str = "lennart-finke/SimpleStories"
         n_ctx=context_width,
         seed=42,
         column_name="story",
-        ddp_rank=0,
-        ddp_world_size=1,
     )
 
     batch_size = 1
     buffer_size = 1000
     global_seed = 0
 
-    loader, tokenizer = create_data_loader(dataset_config, batch_size, buffer_size, global_seed)
+    loader, tokenizer = create_data_loader(
+        dataset_config, batch_size, buffer_size, global_seed, ddp_rank=0, ddp_world_size=1
+    )
     batch = next(iter(loader))
     words = tokenizer.decode_batch(batch["input_ids"].tolist(), skip_special_tokens=False)
     print(words)
+
 
 def load_tokenizer(vocab_size=3072) -> Tokenizer:
     return Tokenizer.from_file(f"{OUT_DIR}/stories-{vocab_size}.json")
@@ -114,6 +115,7 @@ def analysis(vocab_size=3072) -> None:
     for story_idx, story_tokens in enumerate(tokenized_stories[:25]):
         print(f"\nStory {story_idx}")
         print_split_words(story_tokens)
+
 
 if __name__ == "__main__":
     test_tokenizer("simple_stories_train/tokenizer/stories-3072.json")

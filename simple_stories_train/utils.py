@@ -1,11 +1,14 @@
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import torch
 import wandb
 import yaml
+from pydantic import BaseModel
 from torch import nn
+
+REPO_ROOT = Path(__file__).parent.parent
 
 
 def print0(*args: Any, **kwargs: Any) -> None:
@@ -50,13 +53,6 @@ def save_model_and_config(
         print0(f"Saved model to wandb: {str(model_file_name)}")
 
 
-def init_wandb(config: Any, project: str) -> None:
-    wandb.init(
-        project=project,
-        config=config,
-    )
-
-
 def log_metrics(step: int, metrics: dict[str, Any]) -> None:
     wandb.log(metrics, step=step)
 
@@ -71,3 +67,31 @@ def log_generations(step: int, generations: list[list[str]]) -> None:
         },
         step=step,
     )
+
+
+T = TypeVar("T", bound=BaseModel)
+
+
+def load_config(config_path_or_obj: Path | str | T | None, config_model: type[T]) -> T:
+    """Load the config of class `config_model`, either from YAML file, existing config object, or None.
+
+    Args:
+        config_path_or_obj: If config object, must be instance of `config_model`. If str or Path,
+            this must be the path to a .yaml. If None, creates a default config.
+        config_model: the class of the config that we are loading
+    """
+    if config_path_or_obj is None:
+        return config_model()
+
+    if isinstance(config_path_or_obj, config_model):
+        return config_path_or_obj
+
+    if isinstance(config_path_or_obj, str):
+        config_path_or_obj = Path(config_path_or_obj)
+
+    assert isinstance(config_path_or_obj, Path), f"invalid config type {type(config_path_or_obj)}"
+    assert config_path_or_obj.suffix == ".yaml", f"Config file {config_path_or_obj} must be .yaml."
+    assert Path(config_path_or_obj).exists(), f"Config file {config_path_or_obj} does not exist."
+    with open(config_path_or_obj) as f:
+        config_dict = yaml.safe_load(f)
+    return config_model(**config_dict)

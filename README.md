@@ -1,6 +1,14 @@
 # simple_stories_train
 
-Project for training small LMs. Designed for training on SimpleStories, an extension of [TinyStories](https://arxiv.org/abs/2305.07759).
+Project for training small LMs. Designed for training on SimpleStories, an extension of
+[TinyStories](https://arxiv.org/abs/2305.07759).
+
+
+- Training script is based on the efficeint [train_gpt2.py](https://github.com/karpathy/llm.c/blob/master/train_gpt2.py) in [llm.c](https://github.com/karpathy/llm.c) (licensed
+  under MIT ((c) 2024 Andrei Karpathy))
+- Some model architecture implementations are based on
+  [TransformerLens](https://github.com/TransformerLensOrg/TransformerLens) (licensed under
+  MIT ((c) 2022 TransformerLensOrg)).
 
 ## Installation
 

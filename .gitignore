@@ -5,6 +5,7 @@ gpt2_tokenizer.bin
 
 weights/
 wandb/
+**/out/
 .data/
 .checkpoints/
 # Byte-compiled / optimized / DLL files

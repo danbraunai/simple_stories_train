@@ -58,7 +58,7 @@ from torch.distributed.optim import ZeroRedundancyOptimizer
 from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from simple_stories_train.utils import save_model_and_config, print0, is_checkpoint_step
+from simple_stories_train.utils import is_checkpoint_step, print0, save_model_and_config
 
 # -----------------------------------------------------------------------------
 # PyTorch nn.Module definitions for the GPT-2 model
@@ -909,7 +909,7 @@ if __name__ == "__main__":
             pass
 
         # set our checkpoints directory and save off the initilized model
-        checkpoints_dir = output_dir / 'checkpoints'
+        checkpoints_dir = output_dir / "checkpoints"
         checkpoints_dir.mkdir(parents=True, exist_ok=True)
         save_model_and_config(checkpoints_dir, raw_model, step=0)
 
