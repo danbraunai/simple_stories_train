@@ -15,7 +15,7 @@ import time
 from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Literal, Self
 
 import fire
 import numpy as np
@@ -26,7 +26,6 @@ import torch.distributed as dist
 import torch.nn as nn
 import wandb
 from pydantic import (
-    AfterValidator,
     BaseModel,
     ConfigDict,
     Field,
@@ -34,6 +33,7 @@ from pydantic import (
     NonNegativeInt,
     PositiveFloat,
     PositiveInt,
+    model_validator,
 )
 from torch import Tensor
 from torch.distributed import destroy_process_group, init_process_group
@@ -55,6 +55,9 @@ from simple_stories_train.utils import (
 
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
+    wandb_project: str | None = Field(
+        None, description="WandB project name. If None, will not use WandB."
+    )
     train_dataset_config: DatasetConfig = Field(
         DatasetConfig(
             name="lennart-finke/SimpleStories",
@@ -84,7 +87,7 @@ class Config(BaseModel):
     output_dir: Path = Field(
         REPO_ROOT / "out", description="Directory to write logs and checkpoints"
     )
-    model_name: Annotated[str, AfterValidator(lambda x: x in MODEL_CONFIGS)] = Field(
+    model_name: str = Field(
         "d2",
         description=f"Name of the model to train (one of {tuple(MODEL_CONFIGS.keys())}). "
         "Currently only supports models with the Llama architecture.",
@@ -93,13 +96,17 @@ class Config(BaseModel):
     total_batch_size: PositiveInt = Field(
         4096, description="Number of batch_size * sequence_length before updating gradients"
     )  # TODO: Rename/reconfigure
-    num_iterations: PositiveInt = Field(50, description="Number of batches to run")
+    num_iterations: PositiveInt = Field(
+        50, description="Number of gradient accumulation steps"
+    )  # TODO: Allow for None and deplete the (streaming) dataset
     inference_only: bool = Field(False, description="If True, don't update gradients")
     learning_rate: PositiveFloat = Field(1e-4, description="Learning rate")
     warmup_iters: NonNegativeInt = Field(
         0, description="Number of iterations to warmup the learning rate"
     )
-    learning_rate_decay_frac: PositiveFloat = Field(1.0, description="Fraction of lr to decay to")
+    learning_rate_decay_frac: PositiveFloat = Field(
+        1.0, ge=0, le=1, description="Fraction of lr to decay to. 0 decays to 0, 1 doesn't decay"
+    )
     weight_decay: NonNegativeFloat = Field(0.1, description="Weight decay")
     grad_clip: NonNegativeFloat | None = Field(1.0, description="Maximum gradient magnitude")
     val_loss_every: NonNegativeInt = Field(
@@ -117,9 +124,13 @@ class Config(BaseModel):
     zero_stage: Literal[0, 1, 2, 3] = Field(
         0, description="Zero redundancy optimizer stage (0/1/2/3)"
     )
-    wandb_project: str | None = Field(
-        None, description="WandB project name. If None, will not use WandB."
-    )
+
+    @model_validator(mode="after")
+    def validate_model(self) -> Self:
+        # Check that the model name is valid
+        if self.model_name not in MODEL_CONFIGS:
+            raise ValueError(f"Model {self.model_name} not in {tuple(MODEL_CONFIGS.keys())}")
+        return self
 
 
 def main(config_path_or_obj: Path | str | Config | None = None) -> None:
