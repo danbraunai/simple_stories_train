@@ -1,0 +1,29 @@
+wandb_project: simple-stories
+train_dataset_config:
+  name: lennart-finke/SimpleStories
+  is_tokenized: false
+  tokenizer_file_path: simple_stories_train/tokenizer/stories-3072.json
+  split: train
+  n_ctx: 1024
+  seed: 0
+  column_name: story
+val_dataset_config:
+  name: lennart-finke/SimpleStories
+  is_tokenized: false
+  tokenizer_file_path: simple_stories_train/tokenizer/stories-3072.json
+  split: test
+  n_ctx: 1024
+  seed: 0
+  column_name: story
+model_name: d12
+batch_size: 32
+total_batch_size: 32768
+num_iterations: 1000
+learning_rate: 1e-4
+warmup_iters: 10
+learning_rate_decay_frac: 1.0
+weight_decay: 0.1
+grad_clip: 1.0
+val_loss_every: 0
+val_max_steps: 20
+sample_every: 100
