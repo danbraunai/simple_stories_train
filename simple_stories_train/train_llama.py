@@ -3,10 +3,19 @@ Training script. Currently only supports models with the Llama architecture.
 
 Usage:
 ```
-python train_llama.py [PATH_TO_YAML_CONFIG]
+python train_llama.py [PATH/TO/CONFIG.yaml] [--key1 value1 --key2 value2 ...]
 ```
-where `PATH_TO_YAML_CONFIG` contains the training config. If no path is provided, a default config
+where
+- `PATH/TO/CONFIG.yaml` contains the training config. If no path is provided, a default config
 will be used.
+- `--key1 value1 --key2 value2 ...` override values in the config. Note that if you wish to update a
+nested value, you must use dotted notation (e.g. `--train_dataset_config.name my_dataset`).
+
+To run on multiple GPUs, use
+```
+torchrun --standalone --nproc_per_node=N train_llama.py ...
+```
+where `N` is the number of GPUs to use.
 """
 
 import math
@@ -15,7 +24,7 @@ import time
 from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
-from typing import Literal, Self
+from typing import Any, Literal, Self
 
 import fire
 import numpy as np
@@ -134,10 +143,10 @@ class Config(BaseModel):
         return self
 
 
-def main(config_path_or_obj: Path | str | Config | None = None) -> None:
+def main(config_path_or_obj: Path | str | Config | None = None, **kwargs: Any) -> None:
     print0(f"Running pytorch {torch.__version__}")
     load_dotenv(override=True)
-    config = load_config(config_path_or_obj, config_model=Config)
+    config = load_config(config_path_or_obj, config_model=Config, updates=kwargs)
 
     B = config.batch_size
     T = config.train_dataset_config.n_ctx
@@ -240,7 +249,7 @@ def main(config_path_or_obj: Path | str | Config | None = None) -> None:
 
     # -------------------------------------------------------------------------
     # main training loop
-    if config.wandb_project is not None:
+    if config.wandb_project is not None and master_process:
         wandb.init(project=config.wandb_project, config=config.model_dump(mode="json"))
 
     # here we wrap model into DDP container
@@ -276,7 +285,7 @@ def main(config_path_or_obj: Path | str | Config | None = None) -> None:
     logfile = None
     checkpoints_dir = None
     output_dir = None
-    if config.output_dir:
+    if config.output_dir and master_process:
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         output_dir = Path(config.output_dir) / f"{timestamp}"
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -315,7 +324,7 @@ def main(config_path_or_obj: Path | str | Config | None = None) -> None:
                     val_loss += loss.item()
                 val_loss /= config.val_max_steps
             # log to wandb
-            if config.wandb_project is not None:
+            if config.wandb_project is not None and master_process:
                 log_metrics(step, {"val_loss": val_loss})
             # log to console and to file
             print0(f"val loss {val_loss}")
@@ -341,7 +350,7 @@ def main(config_path_or_obj: Path | str | Config | None = None) -> None:
             print0(enc.decode(yg[0].tolist()))
             print0("---------------")
             # log to wandb
-            if config.wandb_project is not None:
+            if config.wandb_project is not None and master_process:
                 generations.append([step, enc.decode(yg[0].tolist())])
             log_generations(step, generations)
 
@@ -414,20 +423,14 @@ def main(config_path_or_obj: Path | str | Config | None = None) -> None:
             f"lr {lr:.2e} | ({(t1-t0)*1000:.2f} ms | {tokens_per_second:.0f} tok/s)"
         )
         # log to wandb
-        if config.wandb_project is not None:
-            log_metrics(
-                step,
-                {
-                    "train_loss": lossf,
-                    "lr": lr,
-                },
-            )
+        if config.wandb_project is not None and master_process:
+            log_metrics(step, {"train_loss": lossf, "lr": lr})
         # log to logile
         if master_process and logfile is not None:
             with open(logfile, "a") as f:
-                f.write("s:%d trl:%f\n" % (step, lossf))
+                f.write("step:%d loss:%f\n" % (step, lossf))
 
-        if checkpoints_dir is not None and is_checkpoint_step(step):
+        if checkpoints_dir is not None and is_checkpoint_step(step) and master_process:
             save_model_and_config(checkpoints_dir, raw_model, config.__dict__, step=step)
 
         # keep track of smooth timings, last 20 iterations

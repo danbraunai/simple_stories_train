@@ -36,11 +36,21 @@ make test-all  # Run all tests
 
 ## Usage
 
-Training a simple model:
-`python simple_stories_train/train_llama.py --model d2 --sequence_length 1024 --total_batch_size=4096`
+### Training a model
+```
+python train_llama.py [PATH/TO/CONFIG.yaml] [--key1 value1 --key2 value2 ...]
+```
+where
+- `PATH/TO/CONFIG.yaml` contains the training config. If no path is provided, a default config will be used.
+- `--key1 value1 --key2 value2 ...` override values in the config. Note that if you wish to update a
+  nested value, you must use dotted notation (e.g. `--train_dataset_config.name my_dataset`).
 
-For a final model, we currently (intend to) run:
-`torchrun --standalone --nproc_per_node=8 simple_stories_train/train_llama.py --model d24 --sequence_length 1024 --total_batch_size=16448 --compile 1 --tensorcores=1 --dtype=bfloat16 --wandb 1`
+To run on multiple GPUs, use
+```
+torchrun --standalone --nproc_per_node=N train_llama.py ...
+```
+where `N` is the number of GPUs to use.
 
-You may be asked to enter your wandb API key. You can find it in your [wandb account settings](https://wandb.ai/settings). Alternatively, to avoid entering your API key on program execution, you can set the environment variable `WANDB_API_KEY` to your API key, or put it in a
-`.env` file under the root of the repository.
+### Logging with Weights & Biases
+To track training with Weights & Biases, you can set the WANDB_PROJECT and WANDB_API_KEY variables in
+`.env`. API keys can be obtained from your [Weights & Biases account settings](https://wandb.ai/settings).

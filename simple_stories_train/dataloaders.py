@@ -17,12 +17,12 @@ licensed under MIT, (c) 2024 ApolloResearch.
 
 class DatasetConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    name: str
+    name: str = "lennart-finke/SimpleStories"
     is_tokenized: bool = True
-    tokenizer_file_path: str
+    tokenizer_file_path: str = "simple_stories_train/tokenizer/stories-3072.json"
     streaming: bool = True
     split: str = "train"
-    n_ctx: int
+    n_ctx: int = 1024
     seed: int | None = None
     column_name: str = "input_ids"
     """The name of the column in the dataset that contains the data (tokenized or non-tokenized).
