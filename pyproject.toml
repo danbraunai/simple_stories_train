@@ -16,7 +16,8 @@ dependencies = [
     "jaxtyping",
     "tiktoken",
     "transformers",
-    "datasets"
+    "datasets",
+    "python-dotenv",
 ]
 
 [project.optional-dependencies]

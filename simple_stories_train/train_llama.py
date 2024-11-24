@@ -25,6 +25,7 @@ import torch._inductor.config as torch_inductor_config
 import torch.distributed as dist
 import torch.nn as nn
 import wandb
+from dotenv import load_dotenv
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -135,7 +136,7 @@ class Config(BaseModel):
 
 def main(config_path_or_obj: Path | str | Config | None = None) -> None:
     print0(f"Running pytorch {torch.__version__}")
-
+    load_dotenv(override=True)
     config = load_config(config_path_or_obj, config_model=Config)
 
     B = config.batch_size
