@@ -11,6 +11,8 @@ will be used.
 - `--key1 value1 --key2 value2 ...` override values in the config. Note that if you wish to update a
 nested value, you must use dotted notation (e.g. `--train_dataset_config.name my_dataset`).
 
+If running on CPU, you may need to set `--compile=False`.
+
 To run on multiple GPUs, use
 ```
 torchrun --standalone --nproc_per_node=N train_llama.py ...
@@ -21,6 +23,7 @@ where `N` is the number of GPUs to use.
 import math
 import os
 import time
+import warnings
 from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
@@ -222,6 +225,8 @@ def main(config_path_or_obj: Path | str | Config | None = None, **kwargs: Any) -
     model.train()
     model.to(device)
     if config.compile:
+        if device_type == "cpu":
+            warnings.warn("compile may not be compatible with cpu, use `--compile=False` if issues")
         if hasattr(torch_inductor_config, "coordinate_descent_tuning"):
             torch_inductor_config.coordinate_descent_tuning = True  # suggested by @Chillee
         print0("compiling the model...")

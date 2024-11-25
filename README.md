@@ -45,6 +45,8 @@ where
 - `--key1 value1 --key2 value2 ...` override values in the config. Note that if you wish to update a
   nested value, you must use dotted notation (e.g. `--train_dataset_config.name my_dataset`).
 
+If running on CPU, you may need to set `--compile=False`.
+
 To run on multiple GPUs, use
 ```
 torchrun --standalone --nproc_per_node=N train_llama.py ...
