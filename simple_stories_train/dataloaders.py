@@ -5,7 +5,7 @@ import torch
 from datasets import Dataset, IterableDataset, load_dataset
 from datasets.distributed import split_dataset_by_node
 from numpy.typing import NDArray
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from tokenizers import Tokenizer
 from torch.utils.data import DataLoader
 
@@ -14,17 +14,17 @@ The bulk of this file is copied from https://github.com/ApolloResearch/e2e_sae
 licensed under MIT, (c) 2024 ApolloResearch.
 """
 
+
 class DatasetConfig(BaseModel):
-    dataset_name: str
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    name: str = "lennart-finke/SimpleStories"
     is_tokenized: bool = True
-    tokenizer_file_path: str
+    tokenizer_file_path: str = "simple_stories_train/tokenizer/stories-3072.json"
     streaming: bool = True
-    split: str
-    n_ctx: int
+    split: str = "train"
+    n_ctx: int = 1024
     seed: int | None = None
     column_name: str = "input_ids"
-    ddp_rank: int = 0
-    ddp_world_size: int = 1
     """The name of the column in the dataset that contains the data (tokenized or non-tokenized).
     Typically 'input_ids' for datasets stored with e2e_sae/scripts/upload_hf_dataset.py, or "tokens"
     for datasets tokenized in TransformerLens (e.g. NeelNanda/pile-10k)."""
@@ -108,9 +108,7 @@ def tokenize_and_concatenate(
         # Tokenize the chunks using the Tokenizer library
         if to_lower:
             chunks = [chunk.lower().replace("[eos]", "[EOS]") for chunk in chunks]
-        tokens = [
-            tokenizer.encode(chunk).ids for chunk in chunks
-        ]  # Get token IDs for each chunk
+        tokens = [tokenizer.encode(chunk).ids for chunk in chunks]  # Get token IDs for each chunk
         tokens = np.concatenate(tokens)  # Flatten the list of token IDs
 
         # Drop padding tokens (if applicable)
@@ -147,9 +145,13 @@ def tokenize_and_concatenate(
     return tokenized_dataset
 
 
-
 def create_data_loader(
-    dataset_config: DatasetConfig, batch_size: int, buffer_size: int = 1000, global_seed: int = 0
+    dataset_config: DatasetConfig,
+    batch_size: int,
+    buffer_size: int = 1000,
+    global_seed: int = 0,
+    ddp_rank: int = 0,
+    ddp_world_size: int = 1,
 ) -> tuple[DataLoader[Any], Tokenizer]:
     """Create a DataLoader for the given dataset.
 
@@ -163,7 +165,7 @@ def create_data_loader(
         A tuple of the DataLoader and the tokenizer.
     """
     dataset = load_dataset(
-        dataset_config.dataset_name, streaming=dataset_config.streaming, split=dataset_config.split
+        dataset_config.name, streaming=dataset_config.streaming, split=dataset_config.split
     )
     seed = dataset_config.seed if dataset_config.seed is not None else global_seed
     if dataset_config.streaming:
@@ -171,8 +173,8 @@ def create_data_loader(
         dataset = dataset.shuffle(seed=seed, buffer_size=buffer_size)
     else:
         dataset = dataset.shuffle(seed=seed)
-    dataset = split_dataset_by_node(dataset, dataset_config.ddp_rank, dataset_config.ddp_world_size) # type: ignore
-    
+    dataset = split_dataset_by_node(dataset, ddp_rank, ddp_world_size)  # type: ignore
+
     tokenizer = Tokenizer.from_file(dataset_config.tokenizer_file_path)
 
     torch_dataset: Dataset
@@ -197,6 +199,6 @@ def create_data_loader(
     loader = DataLoader[Any](
         torch_dataset,  # type: ignore
         batch_size=batch_size,
-        shuffle=False
+        shuffle=False,
     )
     return loader, tokenizer
