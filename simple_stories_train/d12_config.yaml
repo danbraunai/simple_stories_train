@@ -4,6 +4,7 @@ train_dataset_config:
   is_tokenized: false
   tokenizer_file_path: simple_stories_train/tokenizer/stories-3072.json
   split: train
+  streaming: false
   n_ctx: 1024
   seed: 0
   column_name: story
@@ -12,6 +13,7 @@ val_dataset_config:
   is_tokenized: false
   tokenizer_file_path: simple_stories_train/tokenizer/stories-3072.json
   split: test
+  streaming: false
   n_ctx: 1024
   seed: 0
   column_name: story

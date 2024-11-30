@@ -31,7 +31,6 @@ from typing import Any, Literal, Self
 
 import fire
 import numpy as np
-import tiktoken
 import torch
 import torch._inductor.config as torch_inductor_config
 import torch.distributed as dist
@@ -217,7 +216,7 @@ def main(config_path_or_obj: Path | str | Config | None = None, **kwargs: Any) -
         torch.set_float32_matmul_precision("high")
 
     # init (and write) the tokenizer
-    enc: tiktoken.core.Encoding = tiktoken.get_encoding("gpt2")
+    # enc: tiktoken.core.Encoding = tiktoken.get_encoding("gpt2")
 
     model_config = MODEL_CONFIGS[config.model_name]
     model = Llama(model_config)
@@ -232,7 +231,7 @@ def main(config_path_or_obj: Path | str | Config | None = None, **kwargs: Any) -
         print0("compiling the model...")
         model: nn.Module = torch.compile(model)  # type: ignore[reportArgumentType]
 
-    train_loader, _ = create_data_loader(
+    train_loader, train_tokenizer = create_data_loader(
         dataset_config=config.train_dataset_config,
         batch_size=B,
         buffer_size=1000,
@@ -345,19 +344,19 @@ def main(config_path_or_obj: Path | str | Config | None = None, **kwargs: Any) -
             # before we end, let's also do one round of inference
             # we'll kick off the generation with "<|endoftext|>", which designates the start of a
             # new sequence
-            start_ids = [enc.eot_token]
+            start_ids = [train_tokenizer.token_to_id("[EOS]")]
             xg = torch.tensor(start_ids, dtype=torch.long, device=device)[None, ...]
             max_new_tokens = 32
             temperature = 1.0
             top_k = 40
             yg = raw_model.generate(xg, max_new_tokens, temperature=temperature, top_k=top_k)
             print0("---------------")
-            print0(enc.decode(yg[0].tolist()))
+            print0(train_tokenizer.decode(yg[0].tolist()))
             print0("---------------")
             # log to wandb
             if config.wandb_project is not None and master_process:
-                generations.append([step, enc.decode(yg[0].tolist())])
-            log_generations(step, generations)
+                generations.append([step, train_tokenizer.decode(yg[0].tolist())])
+                log_generations(step, generations)
 
         # bit confusing: we want to make sure to eval and sample on 0th iteration
         # but also after the very last iteration. so we loop for step <= num_iterations

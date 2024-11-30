@@ -5,11 +5,12 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "train llama",
+            "name": "train llama d12",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/simple_stories_train/train_llama.py",
             "args": [
+                "${workspaceFolder}/simple_stories_train/d12_config.yaml"
             ],
             "console": "integratedTerminal",
             "justMyCode": true,
