@@ -29,3 +29,4 @@ grad_clip: 1.0
 val_loss_every: 0
 val_max_steps: 20
 sample_every: 100
+intermediate_checkpoints: false

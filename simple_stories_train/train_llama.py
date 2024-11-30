@@ -136,6 +136,9 @@ class Config(BaseModel):
     zero_stage: Literal[0, 1, 2, 3] = Field(
         0, description="Zero redundancy optimizer stage (0/1/2/3)"
     )
+    intermediate_checkpoints: bool = Field(
+        False, description="Save intermediate checkpoints (done at steps 0, 1, 2, 4, 8, ...)?"
+    )
 
     @model_validator(mode="after")
     def validate_model(self) -> Self:
@@ -434,7 +437,11 @@ def main(config_path_or_obj: Path | str | Config | None = None, **kwargs: Any) -
             with open(logfile, "a") as f:
                 f.write("step:%d loss:%f\n" % (step, lossf))
 
-        if checkpoints_dir is not None and is_checkpoint_step(step) and master_process:
+        if (
+            checkpoints_dir is not None
+            and master_process
+            and (config.intermediate_checkpoints and is_checkpoint_step(step) or last_step)
+        ):
             save_model_and_config(checkpoints_dir, raw_model, config.__dict__, step=step)
 
         # keep track of smooth timings, last 20 iterations
