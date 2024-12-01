@@ -454,7 +454,11 @@ def main(config_path_or_obj: Path | str | Config | None = None, **kwargs: Any) -
         if (
             checkpoints_dir is not None
             and master_process
-            and (config.intermediate_checkpoints and is_checkpoint_step(step) or last_step)
+            and (
+                (config.intermediate_checkpoints and is_checkpoint_step(step))
+                or last_step
+                or train_loader_depleted
+            )
         ):
             save_model(checkpoints_dir, raw_model, step=step, wandb_project=config.wandb_project)
 
