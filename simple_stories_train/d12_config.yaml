@@ -18,11 +18,17 @@ val_dataset_config:
   seed: 0
   column_name: story
 model_name: d12
+# 1 GPU
 batch_size: 128
-total_batch_size: 131072
-num_iterations: 4825
-learning_rate: 1e-4
+total_batch_size: 131072 # 128 * 1024
+num_iterations: 4825 # (617806 dataset rows / 128 batch size)
 warmup_iters: 100
+# # 4 GPUs
+# batch_size: 64
+# total_batch_size: 262144 # 64 * 1024 * 4
+# num_iterations: 2410 # (617806 dataset rows / 64 batch size / 4)
+# warmup_iters: 50
+learning_rate: 1e-4
 learning_rate_decay_frac: 0.1
 weight_decay: 0.1
 grad_clip: 1.0
