@@ -308,6 +308,7 @@ def main(config_path_or_obj: Path | str | Config | None = None, **kwargs: Any) -
 
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()
+    train_loader_depleted = False
     timings = []
     generations = []
     for step in range(1, config.num_iterations + 1):
@@ -323,7 +324,11 @@ def main(config_path_or_obj: Path | str | Config | None = None, **kwargs: Any) -
             with torch.no_grad():
                 val_loss = 0.0
                 for _ in range(config.val_max_steps):
-                    bat = next(val_loader_iter)
+                    try:
+                        bat = next(val_loader_iter)
+                    except StopIteration:
+                        # No more batches, end the loop
+                        break
                     x = bat[-1:].view(B, T)  # inputs
                     y = bat[1:].view(B, T)  # targets
                     x, y = x.to(device), y.to(device)
@@ -365,7 +370,7 @@ def main(config_path_or_obj: Path | str | Config | None = None, **kwargs: Any) -
         # but also after the very last iteration. so we loop for step <= num_iterations
         # instead of just < num_iterations (one extra due to <=), only to do
         # the validation/sampling one last time, and then we break right here as we're done.
-        if last_step:
+        if last_step or train_loader_depleted:
             break
 
         # --------------- TRAINING SECTION BEGIN -----------------
@@ -378,7 +383,13 @@ def main(config_path_or_obj: Path | str | Config | None = None, **kwargs: Any) -
         )  # for getting the mean loss (as simple float) over the accumulation steps
         for micro_step in range(grad_accum_steps):
             # fetch a batch
-            bat = next(train_loader)["input_ids"].to(torch.int)
+            try:
+                bat = next(train_loader)["input_ids"].to(torch.int)
+            except StopIteration:
+                # No more batches. Break so we can sync existing gradients and exit.
+                print0("No more batches in train_loader. Ending training now.")
+                train_loader_depleted = True
+                break
             x = bat.view(B, T)[:, :-1]  # inputs
             y = bat.view(B, T)[:, 1:]  # targets
             x, y = x.to(device), y.to(device)
@@ -445,7 +456,7 @@ def main(config_path_or_obj: Path | str | Config | None = None, **kwargs: Any) -
             save_model_and_config(checkpoints_dir, raw_model, config.__dict__, step=step)
 
         # keep track of smooth timings, last 20 iterations
-        if step > 1 and step > config.num_iterations - 20:
+        if step > 1 and (step > config.num_iterations - 20 or train_loader_depleted):
             timings.append(t1 - t0)
 
     # print the average of the last 20 timings, to get something smooth-ish

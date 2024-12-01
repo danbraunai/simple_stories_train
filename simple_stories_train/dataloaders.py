@@ -200,5 +200,6 @@ def create_data_loader(
         torch_dataset,  # type: ignore
         batch_size=batch_size,
         shuffle=False,
+        drop_last=True,
     )
     return loader, tokenizer
