@@ -61,7 +61,8 @@ from simple_stories_train.utils import (
     log_generations,
     log_metrics,
     print0,
-    save_model_and_config,
+    save_config,
+    save_model,
 )
 
 
@@ -304,7 +305,9 @@ def main(config_path_or_obj: Path | str | Config | None = None, **kwargs: Any) -
         # set our checkpoints directory and save off the initilized model
         checkpoints_dir = output_dir / "checkpoints"
         checkpoints_dir.mkdir(parents=True, exist_ok=True)
-        save_model_and_config(checkpoints_dir, raw_model, config.__dict__, step=0)
+        save_config(checkpoints_dir, config_dict=config.model_dump(mode="json"))
+        if config.intermediate_checkpoints:
+            save_model(checkpoints_dir, raw_model, step=0, wandb_project=config.wandb_project)
 
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()
@@ -453,7 +456,7 @@ def main(config_path_or_obj: Path | str | Config | None = None, **kwargs: Any) -
             and master_process
             and (config.intermediate_checkpoints and is_checkpoint_step(step) or last_step)
         ):
-            save_model_and_config(checkpoints_dir, raw_model, config.__dict__, step=step)
+            save_model(checkpoints_dir, raw_model, step=step, wandb_project=config.wandb_project)
 
         # keep track of smooth timings, last 20 iterations
         if step > 1 and (step > config.num_iterations - 20 or train_loader_depleted):
