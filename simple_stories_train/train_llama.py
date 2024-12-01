@@ -456,7 +456,7 @@ def main(config_path_or_obj: Path | str | Config | None = None, **kwargs: Any) -
             and master_process
             and (
                 (config.intermediate_checkpoints and is_checkpoint_step(step))
-                or last_step
+                or step == config.num_iterations - 1
                 or train_loader_depleted
             )
         ):
