@@ -4,7 +4,7 @@ import math
 import torch
 import torch.nn as nn
 from jaxtyping import Float, Int
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
 from torch import Tensor
 from torch.distributed.optim import ZeroRedundancyOptimizer
 from torch.nn import functional as F
@@ -12,7 +12,7 @@ from utils import print0
 
 
 class LlamaConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    # model_config = ConfigDict(extra="forbid", frozen=True)
     block_size: int = 1024
     vocab_size: int = 50257
     n_layer: int = 12
