@@ -34,6 +34,9 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 packages = ["simple_stories_train"]
 
+[project.entry-points.inspect_ai]
+simple_stories_train = "simple_stories_train.evaluate"
+
 [tool.ruff]
 line-length = 100
 fix = true

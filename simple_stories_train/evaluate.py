@@ -1,11 +1,8 @@
 import re
 
-from inspect_ai import Task, task
+from inspect_ai import Task, eval, task
 from inspect_ai.dataset import FieldSpec, Sample, hf_dataset
-from inspect_ai.model import (
-    GenerateConfig,
-    get_model,
-)
+from inspect_ai.model import GenerateConfig, get_model, modelapi
 from inspect_ai.scorer import Score, Target, accuracy, scorer
 from inspect_ai.solver import TaskState, generate
 
@@ -37,7 +34,7 @@ def story_quality_scorer():
 Evaluate the following story based on three criteria by assigning each a score from 0 to 100:
 1. **Originality**: Rate the creativity and uniqueness of the story.
 2. **Coherence**: Rate the logical flow and consistency of the story.
-3. **Grammar**: Rate the grammatical correctness of the story.
+3. **Grammar**: Rate the grammatical correctness of the story. Ignore spacing and capitalization.
 
 **Story to evaluate:**
 {story}
@@ -77,6 +74,13 @@ Please provide your assessment in the following format, ensuring each score is a
     return score
 
 
+@modelapi(name="simple_stories")
+def simple_stories():
+    from inspect_api import SimpleStoriesAPI
+
+    return SimpleStoriesAPI
+
+
 @task
 def evaluate_story_generation():
     """Task definition for evaluating story generation capabilities."""
@@ -85,3 +89,11 @@ def evaluate_story_generation():
         plan=[generate()],
         scorer=story_quality_scorer(),
     )
+
+
+if __name__ == "__main__":
+    model = get_model(
+        "simple_stories/lennart-finke/SimpleStories-125M",
+        model_path="lennart-finke/SimpleStories-125M",
+    )
+    eval(evaluate_story_generation, model=model, limit=1, max_tokens=100)
