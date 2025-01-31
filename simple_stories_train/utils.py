@@ -39,9 +39,13 @@ def save_config(save_dir: Path, config_dict: dict[str, Any]) -> None:
 def save_model(
     save_dir: Path, model: nn.Module, step: int, wandb_project: str | None = None
 ) -> None:
+    # Get the underlying model if it's DDP-wrapped
+    state_dict = model.module.state_dict() if hasattr(model, "module") else model.state_dict()
+
     model_file = save_dir / f"model_step_{step}.pt"
-    torch.save(model.state_dict(), model_file)
+    torch.save(state_dict, model_file)
     print0(f"Saved model to {model_file}")
+
     if wandb_project is not None:
         wandb.save(str(model_file), policy="now", base_path=save_dir)
         print0(f"Saved model to wandb: {str(model_file)}")
@@ -143,9 +147,9 @@ def load_config(
         config_path_or_obj = Path(config_path_or_obj)
 
     if config_path_or_obj is not None:
-        assert isinstance(
-            config_path_or_obj, Path
-        ), f"invalid config type {type(config_path_or_obj)}"
+        assert isinstance(config_path_or_obj, Path), (
+            f"invalid config type {type(config_path_or_obj)}"
+        )
         assert config_path_or_obj.suffix == ".yaml", f"Config file {config_path_or_obj} not .yaml."
         assert Path(config_path_or_obj).exists(), f"Config file {config_path_or_obj} doesn't exist."
         with open(config_path_or_obj) as f:

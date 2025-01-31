@@ -1,18 +1,10 @@
-from dataclasses import dataclass
-
 import torch
 import torch.nn as nn
 from jaxtyping import Float, Int
-from pydantic import BaseModel, ConfigDict
 from torch import Tensor
+from transformers import LlamaConfig as HFLlamaConfig
 
-
-@dataclass
-class HFLlamaConfig:
-    max_position_embeddings: int = 2048
-    hidden_size: int = 768
-    num_attention_heads: int = 12
-    rope_scaling = None
+from simple_stories_train.models.llama import LlamaConfig
 
 
 class HFRotaryEmbedding(nn.Module):
@@ -97,25 +89,6 @@ class HFRotaryEmbedding(nn.Module):
         sin = sin * self.attention_scaling
 
         return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
-
-
-class LlamaConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-    block_size: int = 1024
-    vocab_size: int = 50257
-    n_layer: int = 12
-    n_head: int = 12
-    n_embd: int = 768
-    n_intermediate: int = 768 * 4 * 2 // 3  # SwiGLU has 2/3 of the hidden size
-    mlp_bias: bool = False
-    attn_bias: bool = False
-    rotary_adjacent_pairs: bool = False
-    rotary_dim: int = 768 // 12  # i.e. same as d_head
-    rotary_base: int = 10000
-    n_ctx: int = 1024
-    n_key_value_heads: int = 12 // 4
-    use_grouped_query_attention: bool = True
-    flash_attention: bool = True
 
 
 class CustomRotaryEmbedding(nn.Module):
@@ -238,31 +211,70 @@ class CustomRotaryEmbedding(nn.Module):
 
 # Demo usage
 if __name__ == "__main__":
-    ## Custom rotary
-    config = LlamaConfig()
-    custom_rotary = CustomRotaryEmbedding(config)
+    hidden_size: int = 768
+    num_attention_heads: int = 12
+
+    hf_config = HFLlamaConfig(
+        vocab_size=50527,
+        attention_bias=False,  # Matching your attn_bias
+        use_flash_attention=True,  # Matching your flash_attention
+        max_position_embeddings=2048,
+        hidden_size=hidden_size,
+        num_attention_heads=num_attention_heads,
+        num_hidden_layers=12,
+        intermediate_size=hidden_size * 4 * 2 // 3,
+        num_key_value_heads=num_attention_heads // 4,  # Matching your n_key_value_heads
+        rope_theta=10000,
+        rope_scaling=None,
+    )
+
+    ## Custom rotary embedding
+    custom_config = LlamaConfig(
+        block_size=1024,
+        vocab_size=50257,
+        n_layer=12,
+        n_head=num_attention_heads,
+        n_embd=hidden_size,
+        n_intermediate=hidden_size * 4 * 2 // 3,  # SwiGLU has 2/3 of the hidden size
+        mlp_bias=False,
+        attn_bias=False,
+        rotary_adjacent_pairs=False,
+        rotary_dim=768 // 12,  # i.e. same as d_head
+        rotary_base=10000,
+        n_ctx=1024,
+        n_key_value_heads=num_attention_heads // 4,
+        use_grouped_query_attention=True,
+        flash_attention=True,
+    )
+
+    ## Rotary embedding evaluation with Hugging face implementation
+    hf_rotary = HFRotaryEmbedding(hf_config, device="cpu")
+    custom_rotary = CustomRotaryEmbedding(custom_config)
 
     # Create dummy data
     batch_size = 16
     seq_length = 32
-    head_dim = config.n_embd // config.n_head
+    head_dim = custom_config.n_embd // custom_config.n_head
 
     # Create dummy query and key tensors [batch_size, num_heads, seq_length, head_dim]
-    q_hf = torch.randn(batch_size, config.n_head, seq_length, head_dim)
-    k_hf = torch.randn(batch_size, config.n_head, seq_length, head_dim)
+    q_hf = torch.randn(batch_size, custom_config.n_head, seq_length, head_dim)
+    k_hf = torch.randn(batch_size, custom_config.n_head, seq_length, head_dim)
 
-    q_cl = q_hf.detach().clone()
-    k_cl = k_hf.detach().clone()
+    q_custom = q_hf.detach().clone()
+    k_custom = k_hf.detach().clone()
 
+    # Get rotary embeddings from both implementations
     position_ids = torch.arange(seq_length).expand(batch_size, -1)
+    cos, sin = hf_rotary(q_hf, position_ids)
+    q_hf_rot, k_hf_rot = hf_rotary.apply_rotary_pos_emb(q_hf, k_hf, cos, sin)
 
-    q_hf_rot = custom_rotary.apply_rotary(q_hf)
-    k_hf_rot = custom_rotary.apply_rotary(k_hf)
+    q_custom_rot = custom_rotary.apply_rotary(q_custom)
+    k_custom_rot = custom_rotary.apply_rotary(k_custom)
 
-    config = HFLlamaConfig()
-    rope_embeddings = HFRotaryEmbedding(config, device="cpu")
-
-    cos, sin = rope_embeddings(q_cl, position_ids)
-    q_cl_rot, k_cl_rot = rope_embeddings.apply_rotary_pos_emb(q_cl, k_cl, cos, sin)
-
-    torch.testing.assert_close(q_hf_rot, q_cl_rot)
+    try:
+        torch.testing.assert_close(q_hf_rot, q_custom_rot)
+        torch.testing.assert_close(k_hf_rot, k_custom_rot)
+        print("✓ Rotary embedding test PASSED - outputs match between HF and custom implementation")
+    except AssertionError as e:
+        print("✗ Rotary embedding test FAILED")
+        print(f"Error details: {str(e)}")
