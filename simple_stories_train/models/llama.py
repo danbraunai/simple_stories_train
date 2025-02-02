@@ -447,19 +447,10 @@ class Llama(nn.Module):
         # Determine if path is local file or HuggingFace ID
         is_local = os.path.exists(model_path_or_id)
         if is_local:
-            # Load local checkpoint
-            checkpoint = torch.load(model_path_or_id, weights_only=True)
-
-            # Handle different checkpoint formats
-            if isinstance(checkpoint, dict):
-                if "model_state_dict" in checkpoint:
-                    state_dict = checkpoint["model_state_dict"]
-                elif "state_dict" in checkpoint:
-                    state_dict = checkpoint["state_dict"]
-                else:
-                    state_dict = checkpoint
-            else:
-                state_dict = checkpoint
+            # Load local checkpoint to cpu. The mapping to gpu can be handled
+            # after the model is loaded. Since we use weights_only=True,
+            # the return value will always be a dictionary containing the model weights
+            state_dict = torch.load(model_path_or_id, weights_only=True, map_location="cpu")
 
         else:
             # Load from HuggingFace Hub
@@ -490,8 +481,7 @@ class Llama(nn.Module):
                 ) from err
 
         # Clean up state dict keys if needed
-        if any(k.startswith("_orig_mod.") for k in state_dict):
-            state_dict = {k.replace("_orig_mod.", ""): v for k, v in state_dict.items()}
+        state_dict = {k.replace("_orig_mod.", ""): v for k, v in state_dict.items()}
 
         # Load state dict
         model.load_state_dict(state_dict, strict=strict)
