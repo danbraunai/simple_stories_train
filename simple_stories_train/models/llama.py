@@ -437,10 +437,10 @@ class Llama(nn.Module):
 
         Args:
             model_path_or_id: Path to local checkpoint or HuggingFace model ID
-            config: Optional model configuration. If None, uses default config
+            config: model configuration
             strict: Whether to strictly enforce matching keys in state dict
         Returns:
-            Loaded model instance
+            Loaded model instance into CPU
         """
         model = cls(config)
 
@@ -458,6 +458,7 @@ class Llama(nn.Module):
                 weights_path = hf_hub_download(
                     repo_id=model_path_or_id, filename="model.safetensors"
                 )
+                # loads the model file into CPU by default
                 state_dict = load_file(weights_path)
 
                 # Convert HuggingFace state dict format
