@@ -447,9 +447,6 @@ class Llama(nn.Module):
         # Determine if path is local file or HuggingFace ID
         is_local = os.path.exists(model_path_or_id)
         if is_local:
-            # Load local checkpoint to cpu. The mapping to gpu can be handled
-            # after the model is loaded. Since we use weights_only=True,
-            # the return value will always be a dictionary containing the model weights
             state_dict = torch.load(model_path_or_id, weights_only=True, map_location="cpu")
 
         else:

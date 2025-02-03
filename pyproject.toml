@@ -5,7 +5,7 @@ description = "Training of small LM models for SimpleStories"
 requires-python = ">=3.11"
 readme = "README.md"
 dependencies = [
-    "torch",
+    "torch<2.6.0",
     "torchvision",
     "pydantic",
     "wandb",

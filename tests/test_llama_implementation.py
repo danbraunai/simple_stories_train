@@ -1,19 +1,20 @@
-import pytest
+import tempfile
+from pathlib import Path
+
 import torch
 from transformers import LlamaConfig as HFLlamaConfig
 from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding, apply_rotary_pos_emb
 
 from simple_stories_train.models.llama import CausalSelfAttention as CustomCausalSelfAttention
-from simple_stories_train.models.llama import LlamaConfig
+from simple_stories_train.models.llama import Llama, LlamaConfig
 
 
-@pytest.fixture
-def model_configs():
-    """Fixture to provide model configurations"""
+def test_rotary_embedding_implementation() -> None:
+    """Test the custom rotary embedding implementation against HuggingFace"""
     hidden_size = 768
     num_attention_heads = 12
 
-    hf_config = HFLlamaConfig(
+    hf_llama_config = HFLlamaConfig(
         vocab_size=50527,
         attention_bias=False,
         use_flash_attention=True,
@@ -27,7 +28,7 @@ def model_configs():
         rope_scaling=None,
     )
 
-    custom_config = LlamaConfig(
+    custom_llama_config = LlamaConfig(
         block_size=1024,
         vocab_size=50257,
         n_layer=12,
@@ -45,16 +46,9 @@ def model_configs():
         flash_attention=True,
     )
 
-    return hf_config, custom_config
-
-
-def test_rotary_embedding_implementation(model_configs: tuple[HFLlamaConfig, LlamaConfig]):
-    hf_llama_config, custom_llama_config = model_configs
-
     custom_implementation = CustomCausalSelfAttention(custom_llama_config)
     hf_implementation = LlamaRotaryEmbedding(hf_llama_config)
 
-    # Create dummy data
     batch_size = 16
     seq_length = 32
     head_dim = custom_llama_config.n_embd // custom_llama_config.n_head
@@ -82,3 +76,36 @@ def test_rotary_embedding_implementation(model_configs: tuple[HFLlamaConfig, Lla
     torch.testing.assert_close(
         k_hf_rot, k_custom_rot, msg="Rotated keys don't match between implementations"
     )
+
+
+def test_local_pt_model_loading() -> None:
+    """Test loading a model from a local .pt file"""
+    config = LlamaConfig(
+        block_size=128,
+        vocab_size=300,
+        n_layer=2,
+        n_head=2,
+        n_embd=12,
+        rotary_dim=12 // 2,
+        n_key_value_heads=2 // 2,
+        flash_attention=True,
+    )
+
+    original_model = Llama(config)
+
+    # Create a temporary directory that will be automatically cleaned up
+    with tempfile.TemporaryDirectory() as temp_dir:
+        model_path = Path(temp_dir) / "test_model.pt"
+
+        # Save and load the model back
+        torch.save(original_model.state_dict(), model_path)
+        loaded_model = Llama.from_pretrained(str(model_path), config)
+
+        # Test basic functionality
+        dummy_input = torch.randint(0, config.vocab_size, (1, 10))
+        with torch.no_grad():
+            original_output, _ = original_model(dummy_input)
+            loaded_output, _ = loaded_model(dummy_input)
+
+            torch.testing.assert_close(original_output, loaded_output)
+            assert original_output.shape == (1, 1, config.vocab_size)
