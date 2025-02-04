@@ -1,14 +1,18 @@
 import inspect
 import math
+import os
 
 import torch
 import torch.nn as nn
+from huggingface_hub import hf_hub_download
 from jaxtyping import Float, Int
 from pydantic import BaseModel, ConfigDict
+from safetensors.torch import load_file
 from torch import Tensor
 from torch.distributed.optim import ZeroRedundancyOptimizer
 from torch.nn import functional as F
-from utils import print0
+
+from simple_stories_train.utils import print0
 
 
 class LlamaConfig(BaseModel):
@@ -308,9 +312,9 @@ class Llama(nn.Module):
     ) -> tuple[Float[Tensor, "batch pos"] | None, Float[Tensor, ""] | None]:
         device = idx.device
         b, t = idx.size()
-        assert (
-            t <= self.config.block_size
-        ), f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
+        assert t <= self.config.block_size, (
+            f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
+        )
 
         # forward the model itself
         tok_emb = self.transformer.wte(idx)  # token embeddings of shape (b, t, n_embd)
@@ -423,3 +427,60 @@ class Llama(nn.Module):
             idx = torch.cat((idx, idx_next), dim=1)
 
         return idx
+
+    @classmethod
+    def from_pretrained(
+        cls, model_path_or_id: str, config: LlamaConfig, strict: bool = True
+    ) -> "Llama":
+        """
+        Load a model either from a local checkpoint or from HuggingFace Hub.
+
+        Args:
+            model_path_or_id: Path to local checkpoint or HuggingFace model ID
+            config: model configuration
+            strict: Whether to strictly enforce matching keys in state dict
+        Returns:
+            Loaded model instance into CPU
+        """
+        model = cls(config)
+
+        # Determine if path is local file or HuggingFace ID
+        is_local = os.path.exists(model_path_or_id)
+        if is_local:
+            state_dict = torch.load(model_path_or_id, weights_only=True, map_location="cpu")
+
+        else:
+            # Load from HuggingFace Hub
+            try:
+                weights_path = hf_hub_download(
+                    repo_id=model_path_or_id, filename="model.safetensors"
+                )
+                # loads the model file into CPU by default
+                state_dict = load_file(weights_path)
+
+                # Convert HuggingFace state dict format
+                converted_state_dict = {}
+                for k, v in state_dict.items():
+                    # Remove 'llama.' prefix if present
+                    k = k.replace("llama.", "")
+
+                    # Handle special case for lm_head/wte weight tying
+                    if k == "lm_head.weight":
+                        converted_state_dict["lm_head.weight"] = v
+                        converted_state_dict["transformer.wte.weight"] = v
+                    else:
+                        converted_state_dict[k] = v
+                state_dict = converted_state_dict
+
+            except Exception as err:
+                raise ValueError(
+                    f"Error loading model from HuggingFace Hub: {str(err)}. "
+                    f"Please ensure the model path or ID '{model_path_or_id}' is correct."
+                ) from err
+
+        # Clean up state dict keys if needed
+        state_dict = {k.replace("_orig_mod.", ""): v for k, v in state_dict.items()}
+
+        # Load state dict
+        model.load_state_dict(state_dict, strict=strict)
+        return model
