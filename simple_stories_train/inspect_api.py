@@ -1,3 +1,7 @@
+"""
+NOTE: To reproduce this script, as of the 01.29.2025, inspect_ai needs the manual fix described here: https://github.com/UKGovernmentBEIS/inspect_ai/issues/1103
+"""
+
 import asyncio
 import copy
 import functools
@@ -289,19 +293,23 @@ def process_batches() -> None:
             generator = first_input.generator
 
             # tokenize and move to device
-            tokenized_inputs = [tokenizer.encode(item[0].input) for item in inputs]
-            list_of_lists = [torch.tensor(input.ids) for input in tokenized_inputs]
-            input_ids = torch.nn.utils.rnn.pad_sequence(
-                [torch.tensor(input.ids) for input in tokenized_inputs],
-                batch_first=True,
-                padding_value=-1,
-            )  # TODO: Use the right padding value here
-            input_ids = input_ids.to(device)
+            import threading
 
-            # generate
-            with torch.inference_mode():
-                generation_outputs = generator(idx=input_ids)
-                generate_ids = generation_outputs
+            lock = threading.Lock()
+
+            with lock:
+                tokenized_inputs = [tokenizer.encode(item[0].input) for item in inputs]
+                input_ids = torch.nn.utils.rnn.pad_sequence(
+                    [torch.tensor(input.ids) for input in tokenized_inputs],
+                    batch_first=True,
+                    padding_value=-1,
+                )  # TODO: Use the right padding value here
+                input_ids = input_ids.to(device)
+
+                # generate
+                with torch.inference_mode():
+                    generation_outputs = generator(idx=input_ids)
+                    generate_ids = generation_outputs
 
             # decode
             generated_tokens = generate_ids[:, input_ids.size(dim=1) :]
@@ -310,6 +318,9 @@ def process_batches() -> None:
                 s = s.replace(" ##", "")
                 s = s.replace(" ,", ",")
                 s = s.replace(" .", ".")
+                s = s.replace(" ?", "?")
+                s = s.replace(" !", "!")
+                s = s.replace(" ;", ";")
                 s = s.rsplit(".", 1)[0] + "."  # Clip output after last sentence
                 return s
 
