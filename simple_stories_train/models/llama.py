@@ -400,6 +400,7 @@ class Llama(nn.Module):
         max_new_tokens: int,
         temperature=1.0,
         top_k: int | None = None,
+        eos_token_id: int | None = None,  # Add EOS token parameter
     ) -> Float[Tensor, "... pos"]:
         """
         Take a conditioning sequence of indices idx (LongTensor of shape (b,t)) and complete
@@ -423,8 +424,12 @@ class Llama(nn.Module):
             probs = F.softmax(logits, dim=-1)
             # sample from the distribution
             idx_next = torch.multinomial(probs, num_samples=1)
-            # append sampled index to the running sequence and continue
+            # append sampled index to the running sequence
             idx = torch.cat((idx, idx_next), dim=1)
+
+            # Check if EOS token was generated
+            if eos_token_id is not None and (idx_next == eos_token_id).any():
+                break
 
         return idx
 

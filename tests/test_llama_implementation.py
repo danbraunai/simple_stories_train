@@ -109,3 +109,45 @@ def test_local_pt_model_loading() -> None:
 
             torch.testing.assert_close(original_output, loaded_output)
             assert original_output.shape == (1, 1, config.vocab_size)
+
+
+def test_generate() -> None:
+    """Test the generate method including EOS token functionality for a single sequence"""
+    # Create a simple config for testing
+    config = LlamaConfig(
+        block_size=128,
+        vocab_size=300,
+        n_layer=2,
+        n_head=2,
+        n_embd=12,
+        rotary_dim=12 // 2,
+        n_key_value_heads=2 // 2,
+        flash_attention=True,
+    )
+
+    model = Llama(config)
+    model.eval()
+
+    # Single sequence input (no batching)
+    input_ids = torch.tensor([1, 2, 3], dtype=torch.long).unsqueeze(0)  # Add single batch dimension
+    max_new_tokens = 10
+    eos_token_id = 50
+
+    with torch.no_grad():
+        output = model.generate(input_ids, max_new_tokens=max_new_tokens, eos_token_id=eos_token_id)
+
+    # Verify basic properties
+    assert torch.equal(output[:, : input_ids.shape[1]], input_ids), (
+        "Generated sequence should start with input sequence"
+    )
+    assert torch.all(output >= 0) and torch.all(output < config.vocab_size), (
+        "Generated tokens should be within vocabulary range"
+    )
+    assert output.shape[1] <= input_ids.shape[1] + max_new_tokens, (
+        "Output should not exceed maximum length"
+    )
+
+    # Check if generation stopped at EOS token
+    if eos_token_id in output[0]:  # Look for EOS token in the single sequence
+        eos_index = (output[0] == eos_token_id).nonzero()[0]
+        assert output.shape[1] == eos_index + 1, "Generation should stop at EOS token"
