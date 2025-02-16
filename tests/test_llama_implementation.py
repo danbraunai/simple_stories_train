@@ -111,43 +111,106 @@ def test_local_pt_model_loading() -> None:
             assert original_output.shape == (1, 1, config.vocab_size)
 
 
-def test_generate() -> None:
-    """Test the generate method including EOS token functionality for a single sequence"""
-    # Create a simple config for testing
+def test_generation_with_eos_token_id() -> None:
+    """Test the generate method with EOS token for both single and batched sequences"""
     config = LlamaConfig(
         block_size=128,
-        vocab_size=300,
+        vocab_size=4,
         n_layer=2,
         n_head=2,
         n_embd=12,
-        rotary_dim=12 // 2,
-        n_key_value_heads=2 // 2,
+        rotary_dim=6,
+        n_key_value_heads=1,
         flash_attention=True,
     )
 
     model = Llama(config)
     model.eval()
 
-    # Single sequence input (no batching)
-    input_ids = torch.tensor([1, 2, 3], dtype=torch.long).unsqueeze(0)  # Add single batch dimension
-    max_new_tokens = 10
-    eos_token_id = 50
+    max_new_tokens = 20
+    eos_token_id = 3
 
+    def verify_output(input_ids: torch.Tensor, output: torch.Tensor) -> None:
+        # Verify input sequence is preserved
+        assert torch.equal(output[:, : input_ids.shape[1]], input_ids)
+
+        # Verify token values are valid
+        assert torch.all((output >= 0) & (output < config.vocab_size))
+
+        # Verify length constraints
+        assert output.shape[1] <= input_ids.shape[1] + max_new_tokens
+
+        # With vocab_size=4 and max_new_tokens=20, EOS (id=3) should occur in all sequence
+        has_eos = torch.any(output == eos_token_id, dim=1)
+        assert torch.all(has_eos), (
+            "EOS token should appear in all sequences given small vocab and long generation"
+        )
+
+        # Verify EOS token handling - once EOS appears, all following tokens should be EOS
+        for seq_idx in range(output.shape[0]):
+            eos_positions = (output[seq_idx] == eos_token_id).nonzero()
+            if len(eos_positions) > 0:
+                first_eos_pos = eos_positions[0].item()
+                assert torch.all(output[seq_idx, first_eos_pos:] == eos_token_id), (
+                    "All tokens after first EOS should be EOS tokens"
+                )
+
+    # Test single sequence
+    single_input = torch.tensor([[0, 1, 2]], dtype=torch.long)
     with torch.no_grad():
-        output = model.generate(input_ids, max_new_tokens=max_new_tokens, eos_token_id=eos_token_id)
+        single_output = model.generate(
+            single_input, max_new_tokens=max_new_tokens, eos_token_id=eos_token_id
+        )
+    verify_output(single_input, single_output)
 
-    # Verify basic properties
-    assert torch.equal(output[:, : input_ids.shape[1]], input_ids), (
-        "Generated sequence should start with input sequence"
-    )
-    assert torch.all(output >= 0) and torch.all(output < config.vocab_size), (
-        "Generated tokens should be within vocabulary range"
-    )
-    assert output.shape[1] <= input_ids.shape[1] + max_new_tokens, (
-        "Output should not exceed maximum length"
+    # Test batched input
+    batch_input = torch.tensor([[0, 1, 2], [2, 2, 1]], dtype=torch.long)
+    with torch.no_grad():
+        batch_output = model.generate(
+            batch_input, max_new_tokens=max_new_tokens, eos_token_id=eos_token_id
+        )
+    verify_output(batch_input, batch_output)
+
+
+def test_generation_without_eos_token_id() -> None:
+    """Test the generate method without EOS token for both single and batched sequences"""
+    config = LlamaConfig(
+        block_size=128,
+        vocab_size=4,
+        n_layer=2,
+        n_head=2,
+        n_embd=12,
+        rotary_dim=6,
+        n_key_value_heads=1,
+        flash_attention=True,
     )
 
-    # Check if generation stopped at EOS token
-    if eos_token_id in output[0]:  # Look for EOS token in the single sequence
-        eos_index = (output[0] == eos_token_id).nonzero()[0]
-        assert output.shape[1] == eos_index + 1, "Generation should stop at EOS token"
+    model = Llama(config)
+    model.eval()
+
+    max_new_tokens = 20
+
+    def verify_output(input_ids: torch.Tensor, output: torch.Tensor) -> None:
+        # Verify input sequence is preserved
+        assert torch.equal(output[:, : input_ids.shape[1]], input_ids)
+
+        # Verify token values are valid
+        assert torch.all((output >= 0) & (output < config.vocab_size))
+
+        # Verify length constraints - should generate exactly max_new_tokens
+        expected_length = input_ids.shape[1] + max_new_tokens
+        assert output.shape[1] == expected_length, (
+            f"Expected output length {expected_length}, got {output.shape[1]}"
+        )
+
+    # Test single sequence
+    single_input = torch.tensor([[0, 1, 2]], dtype=torch.long)
+    with torch.no_grad():
+        single_output = model.generate(single_input, max_new_tokens=max_new_tokens)
+    verify_output(single_input, single_output)
+
+    # Test batched input
+    batch_input = torch.tensor([[0, 1, 2], [2, 2, 1]], dtype=torch.long)
+    with torch.no_grad():
+        batch_output = model.generate(batch_input, max_new_tokens=max_new_tokens)
+    verify_output(batch_input, batch_output)
