@@ -109,3 +109,87 @@ def test_local_pt_model_loading() -> None:
 
             torch.testing.assert_close(original_output, loaded_output)
             assert original_output.shape == (1, 1, config.vocab_size)
+
+
+def test_generation_with_eos_token_id() -> None:
+    """Test the generate method with EOS token for both single and batched sequences"""
+    config = LlamaConfig(
+        block_size=128,
+        vocab_size=4,
+        n_layer=2,
+        n_head=2,
+        n_embd=12,
+        rotary_dim=6,
+        n_key_value_heads=1,
+        flash_attention=True,
+    )
+
+    model = Llama(config)
+    model.eval()
+
+    max_new_tokens = 20
+    eos_token_id = 3
+
+    def verify_output(input_ids: torch.Tensor, output: torch.Tensor) -> None:
+        # Verify dimensions match between input and output
+        assert input_ids.dim() == output.dim()
+
+        # Verify input is preserved at the start
+        input_slice = output[..., : input_ids.shape[-1]]
+        assert torch.equal(input_slice, input_ids)
+
+        # Basic checks for token validity and EOS behavior
+        assert torch.all((output >= 0) & (output < config.vocab_size))
+        assert torch.any(output == eos_token_id, dim=-1).all()
+
+    # Test both single and batched inputs
+    single_input = torch.tensor([0, 1, 2])
+    batch_input = torch.tensor([[0, 1, 2], [2, 2, 1]])
+
+    with torch.no_grad():
+        verify_output(
+            single_input, model.generate(single_input, max_new_tokens, eos_token_id=eos_token_id)
+        )
+        verify_output(
+            batch_input, model.generate(batch_input, max_new_tokens, eos_token_id=eos_token_id)
+        )
+
+
+def test_generation_without_eos_token_id() -> None:
+    """Test the generate method without EOS token for both single and batched sequences"""
+    config = LlamaConfig(
+        block_size=128,
+        vocab_size=4,
+        n_layer=2,
+        n_head=2,
+        n_embd=12,
+        rotary_dim=6,
+        n_key_value_heads=1,
+        flash_attention=True,
+    )
+
+    model = Llama(config)
+    model.eval()
+
+    max_new_tokens = 20
+
+    def verify_output(input_ids: torch.Tensor, output: torch.Tensor) -> None:
+        # Verify dimensions match between input and output
+        assert input_ids.dim() == output.dim()
+
+        # Verify input is preserved at the start
+        input_slice = output[..., : input_ids.shape[-1]]
+        assert torch.equal(input_slice, input_ids)
+
+        # Verify length and token validity
+        expected_length = input_ids.shape[-1] + max_new_tokens
+        assert output.shape[-1] == expected_length
+        assert torch.all((output >= 0) & (output < config.vocab_size))
+
+    # Test both single and batched inputs
+    single_input = torch.tensor([0, 1, 2])
+    batch_input = torch.tensor([[0, 1, 2], [2, 2, 1]])
+
+    with torch.no_grad():
+        verify_output(single_input, model.generate(single_input, max_new_tokens))
+        verify_output(batch_input, model.generate(batch_input, max_new_tokens))
