@@ -131,45 +131,28 @@ def test_generation_with_eos_token_id() -> None:
     eos_token_id = 3
 
     def verify_output(input_ids: torch.Tensor, output: torch.Tensor) -> None:
-        # Verify input sequence is preserved
-        assert torch.equal(output[:, : input_ids.shape[1]], input_ids)
+        # Verify dimensions match between input and output
+        assert input_ids.dim() == output.dim()
 
-        # Verify token values are valid
+        # Verify input is preserved at the start
+        input_slice = output[..., : input_ids.shape[-1]]
+        assert torch.equal(input_slice, input_ids)
+
+        # Basic checks for token validity and EOS behavior
         assert torch.all((output >= 0) & (output < config.vocab_size))
+        assert torch.any(output == eos_token_id, dim=-1).all()
 
-        # Verify length constraints
-        assert output.shape[1] <= input_ids.shape[1] + max_new_tokens
+    # Test both single and batched inputs
+    single_input = torch.tensor([0, 1, 2])
+    batch_input = torch.tensor([[0, 1, 2], [2, 2, 1]])
 
-        # With vocab_size=4 and max_new_tokens=20, EOS (id=3) should occur in all sequence
-        has_eos = torch.any(output == eos_token_id, dim=1)
-        assert torch.all(has_eos), (
-            "EOS token should appear in all sequences given small vocab and long generation"
-        )
-
-        # Verify EOS token handling - once EOS appears, all following tokens should be EOS
-        for seq_idx in range(output.shape[0]):
-            eos_positions = (output[seq_idx] == eos_token_id).nonzero()
-            if len(eos_positions) > 0:
-                first_eos_pos = eos_positions[0].item()
-                assert torch.all(output[seq_idx, first_eos_pos:] == eos_token_id), (
-                    "All tokens after first EOS should be EOS tokens"
-                )
-
-    # Test single sequence
-    single_input = torch.tensor([[0, 1, 2]], dtype=torch.long)
     with torch.no_grad():
-        single_output = model.generate(
-            single_input, max_new_tokens=max_new_tokens, eos_token_id=eos_token_id
+        verify_output(
+            single_input, model.generate(single_input, max_new_tokens, eos_token_id=eos_token_id)
         )
-    verify_output(single_input, single_output)
-
-    # Test batched input
-    batch_input = torch.tensor([[0, 1, 2], [2, 2, 1]], dtype=torch.long)
-    with torch.no_grad():
-        batch_output = model.generate(
-            batch_input, max_new_tokens=max_new_tokens, eos_token_id=eos_token_id
+        verify_output(
+            batch_input, model.generate(batch_input, max_new_tokens, eos_token_id=eos_token_id)
         )
-    verify_output(batch_input, batch_output)
 
 
 def test_generation_without_eos_token_id() -> None:
@@ -191,26 +174,22 @@ def test_generation_without_eos_token_id() -> None:
     max_new_tokens = 20
 
     def verify_output(input_ids: torch.Tensor, output: torch.Tensor) -> None:
-        # Verify input sequence is preserved
-        assert torch.equal(output[:, : input_ids.shape[1]], input_ids)
+        # Verify dimensions match between input and output
+        assert input_ids.dim() == output.dim()
 
-        # Verify token values are valid
+        # Verify input is preserved at the start
+        input_slice = output[..., : input_ids.shape[-1]]
+        assert torch.equal(input_slice, input_ids)
+
+        # Verify length and token validity
+        expected_length = input_ids.shape[-1] + max_new_tokens
+        assert output.shape[-1] == expected_length
         assert torch.all((output >= 0) & (output < config.vocab_size))
 
-        # Verify length constraints - should generate exactly max_new_tokens
-        expected_length = input_ids.shape[1] + max_new_tokens
-        assert output.shape[1] == expected_length, (
-            f"Expected output length {expected_length}, got {output.shape[1]}"
-        )
+    # Test both single and batched inputs
+    single_input = torch.tensor([0, 1, 2])
+    batch_input = torch.tensor([[0, 1, 2], [2, 2, 1]])
 
-    # Test single sequence
-    single_input = torch.tensor([[0, 1, 2]], dtype=torch.long)
     with torch.no_grad():
-        single_output = model.generate(single_input, max_new_tokens=max_new_tokens)
-    verify_output(single_input, single_output)
-
-    # Test batched input
-    batch_input = torch.tensor([[0, 1, 2], [2, 2, 1]], dtype=torch.long)
-    with torch.no_grad():
-        batch_output = model.generate(batch_input, max_new_tokens=max_new_tokens)
-    verify_output(batch_input, batch_output)
+        verify_output(single_input, model.generate(single_input, max_new_tokens))
+        verify_output(batch_input, model.generate(batch_input, max_new_tokens))

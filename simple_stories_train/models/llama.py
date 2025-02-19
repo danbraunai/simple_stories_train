@@ -407,6 +407,11 @@ class Llama(nn.Module):
         the sequence max_new_tokens times, feeding the predictions back into the model each time.
         Most likely you'll want to make sure to be in model.eval() mode of operation for this.
         """
+        # Keep track of whether input was 1D and ensure input has batch dimension
+        is_1d = idx.dim() == 1
+        if is_1d:
+            idx = idx.unsqueeze(0)
+
         # Initialize not_completed mask for the batch
         batch_size = idx.size(0)
         not_completed = torch.ones(batch_size, dtype=torch.bool, device=idx.device)
@@ -450,6 +455,10 @@ class Llama(nn.Module):
 
             # append sampled index to the running sequence
             idx = torch.cat((idx, idx_next), dim=1)
+
+        # Remove batch dimension if input was 1D
+        if is_1d:
+            idx = idx.squeeze(0)
 
         return idx
 
