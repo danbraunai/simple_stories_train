@@ -51,4 +51,16 @@ MODEL_CONFIGS = {
         n_key_value_heads=25 // 4,
         flash_attention=True,
     ),
+    "33M": LlamaConfig(
+        block_size=512,
+        vocab_size=50257,
+        n_layer=12,
+        n_head=8,
+        n_embd=512,
+        n_intermediate=512 * 4 * 2 // 3,
+        rotary_dim=512 // 8,
+        n_ctx=512,
+        n_key_value_heads=2,
+        flash_attention=True
+    )
 }

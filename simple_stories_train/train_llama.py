@@ -253,7 +253,7 @@ def main(config_path_or_obj: Path | str | Config | None = None, **kwargs: Any) -
         ddp_rank=ddp_rank,
         ddp_world_size=ddp_world_size,
     )
-    val_loader = iter(val_loader)  # Is this the right way to sample from a Pytorch DataLoader?
+    # val_loader = iter(val_loader)  # Is this the right way to sample from a Pytorch DataLoader?
 
     # -------------------------------------------------------------------------
     # main training loop
@@ -328,12 +328,12 @@ def main(config_path_or_obj: Path | str | Config | None = None, **kwargs: Any) -
                 val_loss = 0.0
                 for _ in range(config.val_max_steps):
                     try:
-                        bat = next(val_loader_iter)
+                        bat = next(val_loader_iter)["input_ids"].to(torch.int)
                     except StopIteration:
                         # No more batches, end the loop
                         break
-                    x = bat[-1:].view(B, T)  # inputs
-                    y = bat[1:].view(B, T)  # targets
+                    x = bat.view(B, T)[:, :-1]  # inputs
+                    y = bat.view(B, T)[:, 1:]  # targets
                     x, y = x.to(device), y.to(device)
                     _, loss = model(x, y, return_logits=False)
                     val_loss += loss.item()
@@ -389,10 +389,19 @@ def main(config_path_or_obj: Path | str | Config | None = None, **kwargs: Any) -
             try:
                 bat = next(train_loader)["input_ids"].to(torch.int)
             except StopIteration:
-                # No more batches. Break so we can sync existing gradients and exit.
-                print0("No more batches in train_loader. Ending training now.")
-                train_loader_depleted = True
-                break
+                # No more batches. We reload the train loader to finish the iteration
+                print0("No more batches in train_loader. Reloading the train loader")
+                train_loader, _ = create_data_loader(
+                    dataset_config=config.train_dataset_config,
+                    batch_size=B,
+                    buffer_size=1000,
+                    global_seed=0,
+                    ddp_rank=ddp_rank,
+                    ddp_world_size=ddp_world_size,
+                )
+                train_loader = iter(train_loader)
+                bat = next(train_loader)["input_ids"].to(torch.int)
+
             x = bat.view(B, T)[:, :-1]  # inputs
             y = bat.view(B, T)[:, 1:]  # targets
             x, y = x.to(device), y.to(device)
