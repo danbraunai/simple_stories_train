@@ -61,6 +61,6 @@ MODEL_CONFIGS = {
         rotary_dim=512 // 8,
         n_ctx=512,
         n_key_value_heads=2,
-        flash_attention=True
-    )
+        flash_attention=True,
+    ),
 }

@@ -192,9 +192,9 @@ def main(config_path_or_obj: Path | str | Config | None = None, **kwargs: Any) -
 
     # calculate gradient accumulation from the desired total batch size and the current run configuration
     tokens_per_fwdbwd = B * T * ddp_world_size
-    assert (
-        config.total_batch_size % tokens_per_fwdbwd == 0
-    ), f"Mismatch between batch size and tokens {config.total_batch_size} % {tokens_per_fwdbwd} != 0"
+    assert config.total_batch_size % tokens_per_fwdbwd == 0, (
+        f"Mismatch between batch size and tokens {config.total_batch_size} % {tokens_per_fwdbwd} != 0"
+    )
     grad_accum_steps = config.total_batch_size // tokens_per_fwdbwd
     print0(f"total desired batch size: {config.total_batch_size}")
     print0(f"=> calculated gradient accumulation steps: {grad_accum_steps}")
@@ -450,7 +450,7 @@ def main(config_path_or_obj: Path | str | Config | None = None, **kwargs: Any) -
         norm_str = f"norm {norm:.4f}" if norm is not None else ""
         print0(
             f"step {step:4d}/{config.num_iterations} | train loss {lossf:.6f} | {norm_str} | "
-            f"lr {lr:.2e} | ({(t1-t0)*1000:.2f} ms | {tokens_per_second:.0f} tok/s)"
+            f"lr {lr:.2e} | ({(t1 - t0) * 1000:.2f} ms | {tokens_per_second:.0f} tok/s)"
         )
         # log to wandb
         if config.wandb_project is not None and master_process:
@@ -477,7 +477,7 @@ def main(config_path_or_obj: Path | str | Config | None = None, **kwargs: Any) -
 
     # print the average of the last 20 timings, to get something smooth-ish
     timings = timings[-20:]
-    print0(f"final {len(timings)} iters avg: {np.mean(timings)*1000:.3f}ms")
+    print0(f"final {len(timings)} iters avg: {np.mean(timings) * 1000:.3f}ms")
     print0(f"peak memory consumption: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB")
 
     # -------------------------------------------------------------------------
