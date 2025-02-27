@@ -329,6 +329,7 @@ def main(config_path_or_obj: Path | str | Config | None = None, **kwargs: Any) -
                 for _ in range(config.val_max_steps):
                     try:
                         bat = next(val_loader_iter)["input_ids"].to(torch.int)
+                        bat = next(val_loader_iter)["input_ids"].to(torch.int)
                     except StopIteration:
                         # No more batches, end the loop
                         break
@@ -389,18 +390,10 @@ def main(config_path_or_obj: Path | str | Config | None = None, **kwargs: Any) -
             try:
                 bat = next(train_loader)["input_ids"].to(torch.int)
             except StopIteration:
-                # No more batches. We reload the train loader to finish the iteration
-                print0("No more batches in train_loader. Reloading the train loader")
-                train_loader, _ = create_data_loader(
-                    dataset_config=config.train_dataset_config,
-                    batch_size=B,
-                    buffer_size=1000,
-                    global_seed=0,
-                    ddp_rank=ddp_rank,
-                    ddp_world_size=ddp_world_size,
-                )
-                train_loader = iter(train_loader)
-                bat = next(train_loader)["input_ids"].to(torch.int)
+                # No more batches. Break so we can sync existing gradients and exit.
+                print0("No more batches in train_loader. Ending training now.")
+                train_loader_depleted = True
+                break
 
             x = bat.view(B, T)[:, :-1]  # inputs
             y = bat.view(B, T)[:, 1:]  # targets

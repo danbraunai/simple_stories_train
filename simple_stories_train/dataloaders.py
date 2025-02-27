@@ -165,7 +165,10 @@ def create_data_loader(
         A tuple of the DataLoader and the tokenizer.
     """
     dataset = load_dataset(
-        dataset_config.name, streaming=dataset_config.streaming, split=dataset_config.split
+        dataset_config.name,
+        streaming=dataset_config.streaming,
+        split=dataset_config.split,
+        trust_remote_code=False,
     )
     seed = dataset_config.seed if dataset_config.seed is not None else global_seed
     if dataset_config.streaming:

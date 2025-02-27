@@ -17,7 +17,7 @@ OUT_DIR = Path("tokenizers")
 
 
 def clean_dataset(dataset="lennart-finke/SimpleStories") -> DatasetDict:
-    dataset = load_dataset(dataset)
+    dataset = load_dataset(dataset, trust_remote_code=False)
     trans = str.maketrans(
         {"\u201d": '"', "\u201c": '"', "\u2019": "'", "\u2018": "'", "\u2014": "-", "\u2026": "..."}
     )
