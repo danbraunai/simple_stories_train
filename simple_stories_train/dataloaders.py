@@ -165,7 +165,10 @@ def create_data_loader(
         A tuple of the DataLoader and the tokenizer.
     """
     dataset = load_dataset(
-        dataset_config.name, streaming=dataset_config.streaming, split=dataset_config.split
+        dataset_config.name,
+        streaming=dataset_config.streaming,
+        split=dataset_config.split,
+        trust_remote_code=False,
     )
     seed = dataset_config.seed if dataset_config.seed is not None else global_seed
     if dataset_config.streaming:
@@ -183,9 +186,9 @@ def create_data_loader(
         # Get a sample from the dataset and check if it's tokenized and what the n_ctx is
         # Note that the dataset may be streamed, so we can't just index into it
         sample = next(iter(torch_dataset))[dataset_config.column_name]  # type: ignore
-        assert (
-            isinstance(sample, torch.Tensor) and sample.ndim == 1
-        ), "Expected the dataset to be tokenized."
+        assert isinstance(sample, torch.Tensor) and sample.ndim == 1, (
+            "Expected the dataset to be tokenized."
+        )
         assert len(sample) == dataset_config.n_ctx, "n_ctx does not match the tokenized length."
 
     else:
