@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 from huggingface_hub import hf_hub_download
 from jaxtyping import Float, Int
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
 from safetensors.torch import load_file
 from torch import Tensor
 from torch.distributed.optim import ZeroRedundancyOptimizer

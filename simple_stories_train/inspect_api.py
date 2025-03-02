@@ -29,7 +29,7 @@ from torch import Tensor  # type: ignore
 from typing_extensions import override
 
 from simple_stories_train.models.llama import Llama, LlamaConfig
-from simple_stories_train.models.model_configs import MODEL_CONFIGS_DICT
+from simple_stories_train.models.model_configs import MODEL_CONFIGS
 
 HF_TOKEN = "HF_TOKEN"
 
@@ -89,10 +89,9 @@ class SimpleStoriesAPI(ModelAPI):
 
         # model
         # TODO: This line should change dynamically with the configuration of the loaded model
-        llama_config = MODEL_CONFIGS_DICT["d12"]
+        llama_config = MODEL_CONFIGS["d12"]
         if model_path:
-            self.model = LlamaHelper(**llama_config)
-            self.model = self.model.from_pretrained(model_path)
+            self.model = Llama.from_pretrained(model_path, llama_config)
             self.model.to(self.device)  # type: ignore
         else:
             raise ValueError("model_path is required")
