@@ -1,14 +1,18 @@
 import inspect
 import math
+import os
 
 import torch
 import torch.nn as nn
+from huggingface_hub import hf_hub_download
 from jaxtyping import Float, Int
 from pydantic import BaseModel
+from safetensors.torch import load_file
 from torch import Tensor
 from torch.distributed.optim import ZeroRedundancyOptimizer
 from torch.nn import functional as F
-from utils import print0
+
+from simple_stories_train.utils import print0
 
 
 class LlamaConfig(BaseModel):
@@ -396,30 +400,121 @@ class Llama(nn.Module):
         max_new_tokens: int,
         temperature=1.0,
         top_k: int | None = None,
+        eos_token_id: int | None = None,
     ) -> Float[Tensor, "... pos"]:
         """
         Take a conditioning sequence of indices idx (LongTensor of shape (b,t)) and complete
         the sequence max_new_tokens times, feeding the predictions back into the model each time.
         Most likely you'll want to make sure to be in model.eval() mode of operation for this.
         """
+        # Keep track of whether input was 1D and ensure input has batch dimension
+        is_1d = idx.dim() == 1
+        if is_1d:
+            idx = idx.unsqueeze(0)
+
+        # Initialize not_completed mask for the batch
+        batch_size = idx.size(0)
+        not_completed = torch.ones(batch_size, dtype=torch.bool, device=idx.device)
+
         for _ in range(max_new_tokens):
+            # If all sequences are completed, stop early
+            if not not_completed.any():
+                break
+
             # if the sequence context is growing too long we must crop it at block_size
             idx_cond = (
                 idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size :]
             )
+
             # forward the model to get the logits for the index in the sequence
             logits, _ = self(idx_cond)
             # pluck the logits at the final step and scale by desired temperature
             logits = logits[:, -1, :] / temperature
+
             # optionally crop the logits to only the top k options
             if top_k is not None:
                 v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
                 logits[logits < v[:, [-1]]] = -float("Inf")
+
             # apply softmax to convert logits to (normalized) probabilities
             probs = F.softmax(logits, dim=-1)
+
             # sample from the distribution
             idx_next = torch.multinomial(probs, num_samples=1)
-            # append sampled index to the running sequence and continue
+
+            # Create a mask for selecting which sequences to update
+            # Only append new tokens for sequences that haven't completed
+            # For completed sequences, replace new token with EOS and let the
+            # tokenizer handle it
+            if eos_token_id is not None:
+                not_completed = not_completed & (idx_next[:, -1] != eos_token_id)
+                update_mask = not_completed.unsqueeze(-1)
+                idx_next = torch.where(
+                    update_mask, idx_next, torch.full_like(idx_next, eos_token_id)
+                )
+
+            # append sampled index to the running sequence
             idx = torch.cat((idx, idx_next), dim=1)
 
+        # Remove batch dimension if input was 1D
+        if is_1d:
+            idx = idx.squeeze(0)
+
         return idx
+
+    @classmethod
+    def from_pretrained(
+        cls, model_path_or_id: str, config: LlamaConfig, strict: bool = True
+    ) -> "Llama":
+        """
+        Load a model either from a local checkpoint or from HuggingFace Hub.
+
+        Args:
+            model_path_or_id: Path to local checkpoint or HuggingFace model ID
+            config: model configuration
+            strict: Whether to strictly enforce matching keys in state dict
+        Returns:
+            Loaded model instance into CPU
+        """
+        model = cls(config)
+
+        # Determine if path is local file or HuggingFace ID
+        is_local = os.path.exists(model_path_or_id)
+        if is_local:
+            state_dict = torch.load(model_path_or_id, weights_only=True, map_location="cpu")
+
+        else:
+            # Load from HuggingFace Hub
+            try:
+                weights_path = hf_hub_download(
+                    repo_id=model_path_or_id, filename="model.safetensors"
+                )
+                # loads the model file into CPU by default
+                state_dict = load_file(weights_path)
+
+                # Convert HuggingFace state dict format
+                converted_state_dict = {}
+                for k, v in state_dict.items():
+                    # Remove 'llama.' prefix if present
+                    k = k.replace("llama.", "")
+
+                    # Handle special case for lm_head/wte weight tying
+                    if k == "lm_head.weight":
+                        converted_state_dict["lm_head.weight"] = v
+                        converted_state_dict["transformer.wte.weight"] = v
+                    else:
+                        converted_state_dict[k] = v
+                state_dict = converted_state_dict
+
+            except Exception as err:
+                raise ValueError(
+                    f"Error loading model from HuggingFace Hub: {str(err)}. "
+                    f"Please ensure the model path or ID '{model_path_or_id}' is correct."
+                ) from err
+
+        # Clean up state dict keys if needed
+        state_dict = {k.replace("_orig_mod.", ""): v for k, v in state_dict.items()}
+
+        # Load state dict
+        model.load_state_dict(state_dict, strict=strict)
+        return model

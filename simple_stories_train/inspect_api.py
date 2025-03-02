@@ -1,4 +1,6 @@
 """
+To run this script, execute `uv run simple_stories_train/inspect_api.py`
+
 NOTE: To reproduce this script, as of the 01.29.2025, inspect_ai needs the manual fix described here: https://github.com/UKGovernmentBEIS/inspect_ai/issues/1103
 """
 
@@ -29,7 +31,7 @@ from torch import Tensor  # type: ignore
 from typing_extensions import override
 
 from simple_stories_train.models.llama import Llama, LlamaConfig
-from simple_stories_train.models.model_configs import MODEL_CONFIGS_DICT
+from simple_stories_train.models.model_configs import MODEL_CONFIGS
 
 HF_TOKEN = "HF_TOKEN"
 
@@ -89,10 +91,9 @@ class SimpleStoriesAPI(ModelAPI):
 
         # model
         # TODO: This line should change dynamically with the configuration of the loaded model
-        llama_config = MODEL_CONFIGS_DICT["d12"]
+        llama_config = MODEL_CONFIGS["d12"]
         if model_path:
-            self.model = LlamaHelper(**llama_config)
-            self.model = self.model.from_pretrained(model_path)
+            self.model = Llama.from_pretrained(model_path, llama_config)
             self.model.to(self.device)  # type: ignore
         else:
             raise ValueError("model_path is required")
@@ -133,7 +134,7 @@ class SimpleStoriesAPI(ModelAPI):
             kwargs["temperature"] = config.temperature
         if config.top_k is not None:
             kwargs["top_k"] = config.top_k
-        generator = functools.partial(self.model.llama.generate, **kwargs)  # type: ignore
+        generator = functools.partial(self.model.generate, **kwargs)  # type: ignore
 
         # prepare decoder
         decoder = functools.partial(

@@ -253,7 +253,7 @@ def main(config_path_or_obj: Path | str | Config | None = None, **kwargs: Any) -
         ddp_rank=ddp_rank,
         ddp_world_size=ddp_world_size,
     )
-    val_loader = iter(val_loader)  # Is this the right way to sample from a Pytorch DataLoader?
+    # val_loader = iter(val_loader)  # Is this the right way to sample from a Pytorch DataLoader?
 
     # -------------------------------------------------------------------------
     # main training loop
@@ -328,12 +328,13 @@ def main(config_path_or_obj: Path | str | Config | None = None, **kwargs: Any) -
                 val_loss = 0.0
                 for _ in range(config.val_max_steps):
                     try:
-                        bat = next(val_loader_iter)
+                        bat = next(val_loader_iter)["input_ids"].to(torch.int)
+                        bat = next(val_loader_iter)["input_ids"].to(torch.int)
                     except StopIteration:
                         # No more batches, end the loop
                         break
-                    x = bat[-1:].view(B, T)  # inputs
-                    y = bat[1:].view(B, T)  # targets
+                    x = bat.view(B, T)[:, :-1]  # inputs
+                    y = bat.view(B, T)[:, 1:]  # targets
                     x, y = x.to(device), y.to(device)
                     _, loss = model(x, y, return_logits=False)
                     val_loss += loss.item()
@@ -393,6 +394,7 @@ def main(config_path_or_obj: Path | str | Config | None = None, **kwargs: Any) -
                 print0("No more batches in train_loader. Ending training now.")
                 train_loader_depleted = True
                 break
+
             x = bat.view(B, T)[:, :-1]  # inputs
             y = bat.view(B, T)[:, 1:]  # targets
             x, y = x.to(device), y.to(device)
@@ -441,7 +443,7 @@ def main(config_path_or_obj: Path | str | Config | None = None, **kwargs: Any) -
         norm_str = f"norm {norm:.4f}" if norm is not None else ""
         print0(
             f"step {step:4d}/{config.num_iterations} | train loss {lossf:.6f} | {norm_str} | "
-            f"lr {lr:.2e} | ({(t1-t0)*1000:.2f} ms | {tokens_per_second:.0f} tok/s)"
+            f"lr {lr:.2e} | ({(t1 - t0) * 1000:.2f} ms | {tokens_per_second:.0f} tok/s)"
         )
         # log to wandb
         if config.wandb_project is not None and master_process:
@@ -468,7 +470,7 @@ def main(config_path_or_obj: Path | str | Config | None = None, **kwargs: Any) -
 
     # print the average of the last 20 timings, to get something smooth-ish
     timings = timings[-20:]
-    print0(f"final {len(timings)} iters avg: {np.mean(timings)*1000:.3f}ms")
+    print0(f"final {len(timings)} iters avg: {np.mean(timings) * 1000:.3f}ms")
     print0(f"peak memory consumption: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB")
 
     # -------------------------------------------------------------------------
