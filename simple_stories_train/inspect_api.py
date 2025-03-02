@@ -1,4 +1,6 @@
 """
+To run this script, execute `uv run simple_stories_train/inspect_api.py`
+
 NOTE: To reproduce this script, as of the 01.29.2025, inspect_ai needs the manual fix described here: https://github.com/UKGovernmentBEIS/inspect_ai/issues/1103
 """
 
@@ -132,7 +134,7 @@ class SimpleStoriesAPI(ModelAPI):
             kwargs["temperature"] = config.temperature
         if config.top_k is not None:
             kwargs["top_k"] = config.top_k
-        generator = functools.partial(self.model.llama.generate, **kwargs)  # type: ignore
+        generator = functools.partial(self.model.generate, **kwargs)  # type: ignore
 
         # prepare decoder
         decoder = functools.partial(

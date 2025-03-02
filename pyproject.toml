@@ -18,7 +18,8 @@ dependencies = [
     "transformers",
     "datasets",
     "python-dotenv",
-    "inspect-ai"
+    "inspect-ai",
+    "openai"
 ]
 
 [project.optional-dependencies]
