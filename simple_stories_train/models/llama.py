@@ -16,7 +16,7 @@ from simple_stories_train.utils import print0
 
 
 class LlamaConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    # model_config = ConfigDict(extra="forbid", frozen=True)
     block_size: int = 1024
     vocab_size: int = 50257
     n_layer: int = 12

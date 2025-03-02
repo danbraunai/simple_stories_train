@@ -64,3 +64,5 @@ MODEL_CONFIGS = {
         flash_attention=True,
     ),
 }
+
+MODEL_CONFIGS = {key: LlamaConfig(**value) for key, value in MODEL_CONFIGS_DICT.items()}  # type: ignore
