@@ -312,9 +312,9 @@ class Llama(nn.Module):
     ) -> tuple[Float[Tensor, "batch pos"] | None, Float[Tensor, ""] | None]:
         device = idx.device
         b, t = idx.size()
-        assert t <= self.config.block_size, (
-            f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
-        )
+        assert (
+            t <= self.config.block_size
+        ), f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
 
         # forward the model itself
         tok_emb = self.transformer.wte(idx)  # token embeddings of shape (b, t, n_embd)

@@ -11,7 +11,7 @@ Arguments:
     tokenizer_path (str): Path to the tokenizer file
     tokenizer_eos_token (str): End-of-sequence token for the tokenizer. Defaults to '[EOS]'
     device (str, optional): Device to run the model on ('cpu' or 'cuda'). Defaults to 'cpu'.
-    
+
 Example:
     python evaluate_stories.py --model_path="./models/model.pt"
                               --model_config="33M"
@@ -20,13 +20,13 @@ Example:
                               --device="cuda"
 
 Majority of the script is taken from https://github.com/danbraunai/simple_stories_train/blob/evaluation/simple_stories_train/evaluate.py
-TODO: Giving '[EOS]' as tokenizer_eos_token on cli causes error as python sees it as a list rather 
+TODO: Giving '[EOS]' as tokenizer_eos_token on cli causes error as python sees it as a list rather
 than string. Gotta handle that better
 """
 
 import os
 import re
-from typing import Callable
+from collections.abc import Callable
 
 import fire
 import torch
@@ -72,7 +72,7 @@ class HuggingFaceStoriesDataset(Dataset):
         self.hf_dataset = load_dataset(config.name, split=config.split)
 
         if limit:
-            self.hf_dataset = self.hf_dataset.select(range(min(limit, len(self.hf_dataset))))
+            self.hf_dataset = self.hf_dataset.select(range(min(limit, len(self.hf_dataset))))  # type: ignore
 
         # Create samples
         self.samples = []
@@ -89,14 +89,13 @@ class HuggingFaceStoriesDataset(Dataset):
             return text
         return " ".join(words[: self.config.prompt_words])
 
-    
-    def __getitem__(self, index: int) -> Sample: # type: ignore[override]
+    def __getitem__(self, index: int) -> Sample:  # type: ignore[override]
         return self.samples[index]
 
     def __len__(self) -> int:
         return len(self.samples)
 
-    def filter(self, predicate: Callable[[Sample], bool]) -> "HuggingFaceStoriesDataset": # type: ignore[override]
+    def filter(self, predicate: Callable[[Sample], bool]) -> "HuggingFaceStoriesDataset":  # type: ignore[override]
         filtered_samples = [sample for sample in self.samples if predicate(sample)]
         new_dataset = HuggingFaceStoriesDataset(self.config, len(filtered_samples))
         new_dataset.samples = filtered_samples
@@ -130,7 +129,7 @@ class HuggingFaceStoriesDataset(Dataset):
     def shuffled(self) -> bool:
         return self._shuffled
 
-    def sort(self, key: callable) -> None:
+    def sort(self, key: callable) -> None:  # type:ignore
         self.samples.sort(key=key)
 
 

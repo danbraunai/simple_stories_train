@@ -192,9 +192,9 @@ def main(config_path_or_obj: Path | str | Config | None = None, **kwargs: Any) -
 
     # calculate gradient accumulation from the desired total batch size and the current run configuration
     tokens_per_fwdbwd = B * T * ddp_world_size
-    assert config.total_batch_size % tokens_per_fwdbwd == 0, (
-        f"Mismatch between batch size and tokens {config.total_batch_size} % {tokens_per_fwdbwd} != 0"
-    )
+    assert (
+        config.total_batch_size % tokens_per_fwdbwd == 0
+    ), f"Mismatch between batch size and tokens {config.total_batch_size} % {tokens_per_fwdbwd} != 0"
     grad_accum_steps = config.total_batch_size // tokens_per_fwdbwd
     print0(f"total desired batch size: {config.total_batch_size}")
     print0(f"=> calculated gradient accumulation steps: {grad_accum_steps}")

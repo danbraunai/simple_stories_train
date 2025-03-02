@@ -147,9 +147,9 @@ def load_config(
         config_path_or_obj = Path(config_path_or_obj)
 
     if config_path_or_obj is not None:
-        assert isinstance(config_path_or_obj, Path), (
-            f"invalid config type {type(config_path_or_obj)}"
-        )
+        assert isinstance(
+            config_path_or_obj, Path
+        ), f"invalid config type {type(config_path_or_obj)}"
         assert config_path_or_obj.suffix == ".yaml", f"Config file {config_path_or_obj} not .yaml."
         assert Path(config_path_or_obj).exists(), f"Config file {config_path_or_obj} doesn't exist."
         with open(config_path_or_obj) as f:
