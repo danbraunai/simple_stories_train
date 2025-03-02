@@ -48,10 +48,11 @@ from inspect_ai.model import (
 from inspect_ai.scorer import Score, Target, mean, scorer
 from inspect_ai.solver import TaskState, generate
 from inspect_ai.tool import ToolChoice, ToolInfo
-from models.llama import Llama
-from models.model_configs import MODEL_CONFIGS
 from pydantic import BaseModel, ConfigDict
 from tokenizers import Tokenizer
+
+from simple_stories_train.models.llama import Llama
+from simple_stories_train.models.model_configs import MODEL_CONFIGS
 
 
 class DatasetConfig(BaseModel):
