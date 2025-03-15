@@ -1,7 +1,7 @@
 train_dataset_config:
   name: lennart-finke/SimpleStories
   is_tokenized: false
-  tokenizer_file_path: tokenizer/bpe-stories-4096.json
+  tokenizer_file_path: tokenizer/simplestories-4096.json
   split: train
   streaming: false
   n_ctx: 512
@@ -10,13 +10,13 @@ train_dataset_config:
 val_dataset_config:
   name: lennart-finke/SimpleStories
   is_tokenized: false
-  tokenizer_file_path: tokenizer/bpe-stories-4096.json
+  tokenizer_file_path: tokenizer/simplestories-4096.json
   split: test
   streaming: false
   n_ctx: 512
   seed: 0
   column_name: story
-model_name: 33M
+model_name: 35M
 # 1 GPU
 batch_size: 64
 total_batch_size: 32768 # 64 * 512

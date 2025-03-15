@@ -186,4 +186,4 @@ def analysis(vocab_size=4096) -> None:
 
 
 if __name__ == "__main__":
-    test_tokenizer("tokenizer/simplestories-4096.json")
+    test_tokenizer("tokenizer/stories-3072.json")

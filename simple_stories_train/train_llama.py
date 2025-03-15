@@ -253,7 +253,7 @@ def main(config_path_or_obj: Path | str | Config | None = None, **kwargs: Any) -
         ddp_rank=ddp_rank,
         ddp_world_size=ddp_world_size,
     )
-    # val_loader = iter(val_loader)  # Is this the right way to sample from a Pytorch DataLoader?
+    val_loader = iter(val_loader)  # Is this the right way to sample from a Pytorch DataLoader?
 
     # -------------------------------------------------------------------------
     # main training loop
@@ -328,7 +328,6 @@ def main(config_path_or_obj: Path | str | Config | None = None, **kwargs: Any) -
                 val_loss = 0.0
                 for _ in range(config.val_max_steps):
                     try:
-                        bat = next(val_loader_iter)["input_ids"].to(torch.int)
                         bat = next(val_loader_iter)["input_ids"].to(torch.int)
                     except StopIteration:
                         # No more batches, end the loop
