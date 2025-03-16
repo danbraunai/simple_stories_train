@@ -51,10 +51,10 @@ MODEL_CONFIGS = {
         n_key_value_heads=25 // 4,
         flash_attention=True,
     ),
-    # TinyStories Model Configs
+    # SimpleStories Model Configs
     "1.25M": LlamaConfig(
         block_size=512,
-        vocab_size=4096,  # Reduced vocab as in the TinyStories paper
+        vocab_size=4096,
         n_layer=4,
         n_head=4,
         n_embd=128,
