@@ -1,6 +1,5 @@
 """
-TODO: Use the finalized tokenizer.
-This file is copied almost 1:1 from Nix Goldowsky-Dill's adaption of the tokenizer in https://github.com/juand-r/tiny_tokenizer.
+This file is inspired from Nix Goldowsky-Dill's adaption of the tokenizer in https://github.com/juand-r/tiny_tokenizer.
 """
 
 from itertools import chain
@@ -8,24 +7,37 @@ from pathlib import Path
 
 from dataloaders import DatasetConfig, create_data_loader
 from datasets import Dataset, DatasetDict, load_dataset
-from tokenizers import Tokenizer, pre_tokenizers
+from tokenizers import Tokenizer
+from tokenizers.decoders import WordPiece as WordPieceDecoder
 from tokenizers.models import WordPiece
-from tokenizers.pre_tokenizers import Digits, Punctuation, Whitespace
+from tokenizers.normalizers import Lowercase, Replace
+from tokenizers.normalizers import Sequence as NormSequence
+from tokenizers.pre_tokenizers import Digits, Punctuation, Sequence, Whitespace
+from tokenizers.processors import TemplateProcessing
 from tokenizers.trainers import WordPieceTrainer
 
-OUT_DIR = Path("tokenizers")
+OUT_DIR = Path("tokenizer")
+
+# Define common affixes for special handling based on morphological analysis of the dataset
+COMMON_PREFIXES = ["un", "re"]
+COMMON_SUFFIXES = ["ed", "ing", "ly", "er", "ness"]
 
 
 def clean_dataset(dataset="lennart-finke/SimpleStories") -> DatasetDict:
+    """
+    Load and clean the dataset, implementing lowercase strategy.
+    """
     dataset = load_dataset(dataset, trust_remote_code=False)
     trans = str.maketrans(
         {"\u201d": '"', "\u201c": '"', "\u2019": "'", "\u2018": "'", "\u2014": "-", "\u2026": "..."}
     )
+
     cleaned = [
         s.translate(trans).encode("ascii", "ignore").decode("ascii").lower()
         for s in dataset["train"]["story"]  # pyright: ignore
     ]
 
+    # Split into train and validation sets
     n_train = int(len(cleaned) * 0.9)
     train, validation = cleaned[:n_train], cleaned[n_train:]
 
@@ -35,27 +47,82 @@ def clean_dataset(dataset="lennart-finke/SimpleStories") -> DatasetDict:
     return DatasetDict({"train": train_ds, "validation": validation_ds})
 
 
-def train_tokenizer(vocab_size=4096, dataset="lennart-finke/SimpleStories") -> None:
-    data = clean_dataset(dataset=dataset)["train"]["story"]
+def create_tokenizer(vocab_size=4096) -> Tokenizer:
+    """
+    Create a tokenizer with integrated affix handling using Split pre-tokenizers.
 
-    # Split almost all types into individual tokens
-    pre_tokenizer = pre_tokenizers.Sequence(
-        [Punctuation(), Whitespace(), Digits(individual_digits=True)]
+    Args:
+        vocab_size: The target vocabulary size for the tokenizer
+
+    Returns:
+        A configured Tokenizer object ready for training
+    """
+    print(f"Creating tokenizer with target vocabulary size: {vocab_size}")
+
+    # Initialize WordPiece tokenizer with vocabulary size hint
+    tokenizer = Tokenizer(
+        WordPiece(
+            unk_token="[UNK]",
+            vocab_size=vocab_size,  # type: ignore
+        )
     )
 
-    # The tokenizer itself, being a WordPiece tokenizer, which is generally smaller than a byte pair encoding
-    tokenizer = Tokenizer(WordPiece(unk_token="[UNK]"))  # pyright: ignore
-    tokenizer.pre_tokenizer = pre_tokenizer  # pyright: ignore
+    # Set normalizers (lowercase everything)
+    tokenizer.normalizer = NormSequence(
+        [
+            Lowercase(),
+            Replace("``", '"'),
+            Replace("''", '"'),
+        ]  # type: ignore
+    )
 
-    print("training tokenizer...")
+    # Set up the pre-tokenizer sequence
+    tokenizer.pre_tokenizer = Sequence(
+        [Whitespace(), Punctuation(), Digits(individual_digits=True)]
+    )  # type: ignore
+
+    # Add post-processor for special tokens
+    tokenizer.post_processor = TemplateProcessing(single="$A [EOS]", special_tokens=[("[EOS]", 1)])  # type: ignore
+
+    tokenizer.decoder = WordPieceDecoder(prefix="##")  # type: ignore
+
+    return tokenizer
+
+
+def train_tokenizer(vocab_size=4096, dataset="lennart-finke/SimpleStories") -> None:
+    """
+    Train the tokenizer with the specified vocabulary size and dataset.
+
+    Args:
+        vocab_size: The target vocabulary size
+        dataset: The dataset to train on
+    """
+    data = clean_dataset(dataset=dataset)["train"]["story"]
+
+    tokenizer = create_tokenizer(vocab_size)
+
+    special_tokens = ["[UNK]", "[EOS]"]
+    affixes = COMMON_PREFIXES + COMMON_SUFFIXES
+
+    print("Training tokenizer...")
     # Train the tokenizer
-    trainer = WordPieceTrainer(vocab_size=vocab_size, special_tokens=["[UNK]", "[EOS]"])
+    trainer = WordPieceTrainer(
+        vocab_size=vocab_size, special_tokens=special_tokens, initial_alphabet=affixes
+    )
+
     tokenizer.train_from_iterator(data, trainer=trainer, length=len(data))
+
+    # Save the tokenizer
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    tokenizer.save(f"{OUT_DIR}/stories-{vocab_size}.json")
+    tokenizer_path = f"{OUT_DIR}/simplestories-{vocab_size}.json"
+    tokenizer.save(tokenizer_path)
+    print(f"Tokenizer saved to {tokenizer_path}")
 
 
 def test_tokenizer(filepath: str, dataset: str = "lennart-finke/SimpleStories") -> None:
+    """
+    Test the trained tokenizer on sample data.
+    """
     dataset_name = dataset
     split = "train"
 
@@ -80,11 +147,12 @@ def test_tokenizer(filepath: str, dataset: str = "lennart-finke/SimpleStories") 
     )
     batch = next(iter(loader))
     words = tokenizer.decode_batch(batch["input_ids"].tolist(), skip_special_tokens=False)
+    print("Sample tokenization:")
     print(words)
 
 
-def load_tokenizer(vocab_size=3072) -> Tokenizer:
-    return Tokenizer.from_file(f"{OUT_DIR}/stories-{vocab_size}.json")
+def load_tokenizer(vocab_size=4096) -> Tokenizer:
+    return Tokenizer.from_file(f"{OUT_DIR}/simplestories-{vocab_size}.json")
 
 
 def print_split_words(story_tokens: list[str]) -> None:
@@ -101,7 +169,7 @@ def print_split_words(story_tokens: list[str]) -> None:
             print(f"{word_start} {' '.join(word_parts)}")
 
 
-def analysis(vocab_size=3072) -> None:
+def analysis(vocab_size=4096) -> None:
     tokenizer = load_tokenizer(vocab_size)
     stories = clean_dataset(dataset="lennart-finke/SimpleStories")["validation"]["story"]
     tokenized_stories = [tokenizer.encode(story).tokens for story in stories]
@@ -118,4 +186,4 @@ def analysis(vocab_size=3072) -> None:
 
 
 if __name__ == "__main__":
-    test_tokenizer("simple_stories_train/tokenizer/stories-3072.json")
+    test_tokenizer("tokenizer/simplestories-4096.json")

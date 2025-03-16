@@ -1,0 +1,22 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "train llama d12",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/simple_stories_train/train_llama.py",
+            "args": [
+                "${workspaceFolder}/simple_stories_train/d12_config.yaml"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "env": {
+                "PYDEVD_DISABLE_FILE_VALIDATION": "1"
+            }
+        },
+    ]
+}
