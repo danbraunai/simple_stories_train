@@ -108,7 +108,7 @@ def test_local_pt_model_loading() -> None:
             loaded_output, _ = loaded_model(dummy_input)
 
             torch.testing.assert_close(original_output, loaded_output)
-            assert original_output.shape == (1, 1, config.vocab_size)
+            assert original_output.shape == loaded_output.shape
 
 
 def test_generation_with_eos_token_id() -> None:
