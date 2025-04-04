@@ -8,6 +8,7 @@ from numpy.typing import NDArray
 from pydantic import BaseModel, ConfigDict
 from tokenizers import Tokenizer
 from torch.utils.data import DataLoader
+from transformers import AutoTokenizer
 
 """
 The bulk of this file is copied from https://github.com/ApolloResearch/e2e_sae
@@ -19,7 +20,8 @@ class DatasetConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     name: str = "lennart-finke/SimpleStories"
     is_tokenized: bool = True
-    tokenizer_file_path: str = "simple_stories_train/tokenizer/stories-3072.json"
+    tokenizer_file_path: str | None = "simple_stories_train/tokenizer/stories-3072.json"
+    hf_tokenizer_path: str | None = None
     streaming: bool = True
     split: str = "train"
     n_ctx: int = 1024
@@ -160,6 +162,8 @@ def create_data_loader(
         batch_size: The batch size.
         buffer_size: The buffer size for streaming datasets.
         global_seed: Used for shuffling if dataset_config.seed is None.
+        ddp_rank: The rank of the current process in DDP.
+        ddp_world_size: The world size in DDP.
 
     Returns:
         A tuple of the DataLoader and the tokenizer.
@@ -178,7 +182,23 @@ def create_data_loader(
         dataset = dataset.shuffle(seed=seed)
     dataset = split_dataset_by_node(dataset, ddp_rank, ddp_world_size)  # type: ignore
 
-    tokenizer = Tokenizer.from_file(dataset_config.tokenizer_file_path)
+    # Load tokenizer based on config
+    if dataset_config.hf_tokenizer_path is not None:
+        # Load from HuggingFace
+        tokenizer = AutoTokenizer.from_pretrained(
+            dataset_config.hf_tokenizer_path,
+            add_bos_token=False,
+            unk_token="[UNK]",
+            eos_token="[EOS]",
+            bos_token=None,
+        ).backend_tokenizer
+    elif dataset_config.tokenizer_file_path is not None:
+        # Load from local file
+        tokenizer = Tokenizer.from_file(dataset_config.tokenizer_file_path)
+    else:
+        raise ValueError(
+            "Either tokenizer_file_path or hf_tokenizer_path must be specified"
+        )
 
     torch_dataset: Dataset
     if dataset_config.is_tokenized:
