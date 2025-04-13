@@ -63,6 +63,7 @@ class CausalSelfAttention(nn.Module):
         self.rotary_base = config.rotary_base
         self.n_ctx = config.n_ctx
         self.flash_attention = config.flash_attention
+        self.n_key_value_heads = config.n_key_value_heads
 
         # not really a 'bias', more of a mask, but following the OpenAI/HF naming though
         self.register_buffer(
@@ -168,7 +169,7 @@ class CausalSelfAttention(nn.Module):
             mask_rotary_cos = self.rotary_cos[offset_position_ids, None, :]
             mask_rotary_sin = self.rotary_sin[offset_position_ids, None, :]
             x_rotated = x_rot * mask_rotary_cos + x_flip * mask_rotary_sin
-        out = torch.cat([x_rotated, x_pass], dim=-1)
+        out = x_rotated
         return out.permute(0, 2, 1, 3)
 
     def forward(
@@ -198,6 +199,15 @@ class CausalSelfAttention(nn.Module):
         q = self.apply_rotary(q, 0, attention_mask)
         k = self.apply_rotary(k, 0, attention_mask)  # keys are cached so no offset
 
+        if self.n_key_value_heads < self.n_head:
+            # Repeat k and v along the head dimension to match n_head
+            k = k[:, :self.n_key_value_heads, :, :]
+            v = v[:, :self.n_key_value_heads, :, :]
+            # Repeat to fill the remaining dimensions
+            repeat_factor = self.n_head // self.n_key_value_heads
+            k = k.repeat_interleave(repeat_factor, dim=1)
+            v = v.repeat_interleave(repeat_factor, dim=1)
+        
         if self.flash_attention:
             # flashattention
             y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
@@ -208,11 +218,13 @@ class CausalSelfAttention(nn.Module):
             att = att.masked_fill(self.bias[:, :, :T, :T] == 0, float("-inf"))
             att = F.softmax(att, dim=-1)
             y = att @ v  # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+        
         y = (
             y.transpose(1, 2).contiguous().view(B, T, C)
         )  # re-assemble all head outputs side by side
         # output projection
         y = self.c_proj(y)
+        
         return y
 
 
@@ -258,8 +270,12 @@ class Block(nn.Module):
         self.mlp = SwiGLUMLP(config)
 
     def forward(self, x: Float[Tensor, "... pos d_model"]) -> Float[Tensor, "... pos d_model"]:
-        x = x + self.attn(self.rms_1(x))
-        x = x + self.mlp(self.rms_2(x))
+        ln1 = self.rms_1(x)
+        attn_output = self.attn(ln1)
+        x = x + attn_output
+        ln2 = self.rms_2(x)
+        mlp_output = self.mlp(ln2)
+        x = x + mlp_output
         return x
 
 
