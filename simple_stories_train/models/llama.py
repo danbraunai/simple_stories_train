@@ -38,44 +38,40 @@ class LlamaConfig(BaseModel):
 
 class CausalSelfAttention(nn.Module):
     def __init__(self, config: LlamaConfig):
-        # TODO: Make sure no biases once changing to rotary, as llama doesn't use them
         super().__init__()
         assert config.n_embd % config.n_head == 0
         self.use_grouped_query_attention = config.use_grouped_query_attention
-
+        self.n_head = config.n_head
+        self.n_embd = config.n_embd
+        self.head_dim = config.n_embd // config.n_head  # Head size
+        self.n_key_value_heads = config.n_key_value_heads
+        self.repeat_kv_heads = config.n_head // config.n_key_value_heads  # Will be 1 if not GQA
+        self.rotary_dim = self.head_dim  # Align rotary_dim with head_dim for simplicity here, different from our original intention
+        self.rotary_adjacent_pairs = config.rotary_adjacent_pairs
+        self.rotary_base = config.rotary_base
+        self.n_ctx = config.n_ctx  # Max context length for precomputation
+        self.flash_attention = config.flash_attention
         if self.use_grouped_query_attention:
-            self.repeat_kv_heads = config.n_head // config.n_key_value_heads
-            self.kv_attn = nn.Linear(
-                config.n_embd, 2 * config.n_embd // self.repeat_kv_heads, bias=config.attn_bias
-            )
             self.q_attn = nn.Linear(config.n_embd, config.n_embd, bias=config.attn_bias)
+            self.kv_attn = nn.Linear(
+                config.n_embd, 2 * self.n_key_value_heads * self.head_dim, bias=config.attn_bias
+            )
         else:
             self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, bias=config.attn_bias)
 
-        # output projection
         self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=config.attn_bias)
-        self.c_proj.LLMC_RESIDUAL_SCALE_FLAG = 1  # type:ignore
-        # regularization
-        self.n_head = config.n_head
-        self.n_embd = config.n_embd
-        self.rotary_dim = config.rotary_dim
-        self.rotary_adjacent_pairs = config.rotary_adjacent_pairs
-        self.rotary_base = config.rotary_base
-        self.n_ctx = config.n_ctx
-        self.flash_attention = config.flash_attention
-        self.n_key_value_heads = config.n_key_value_heads
+        self.c_proj.LLMC_RESIDUAL_SCALE_FLAG = 1
 
-        # not really a 'bias', more of a mask, but following the OpenAI/HF naming though
         self.register_buffer(
             "bias",
             torch.tril(torch.ones(config.block_size, config.block_size)).view(
                 1, 1, config.block_size, config.block_size
             ),
+            persistent=False,  # Set persistent=False if not part of model state dict
         )
-
         sin, cos = self.calculate_sin_cos_rotary(self.rotary_dim, self.n_ctx, base=self.rotary_base)
-        self.register_buffer("rotary_sin", sin)
-        self.register_buffer("rotary_cos", cos)
+        self.register_buffer("rotary_sin", sin, persistent=False)
+        self.register_buffer("rotary_cos", cos, persistent=False)
 
     def calculate_sin_cos_rotary(
         self,
@@ -84,147 +80,155 @@ class CausalSelfAttention(nn.Module):
         base: int = 10000,
         dtype: torch.dtype = torch.float32,
     ) -> tuple[Tensor, Tensor]:
-        """
-        Calculate the sine and cosine waves to use in a rotary embedding. See https://blog.eleuther.ai/rotary-embeddings/ for details
-
-        Note: For some inexplicable reason, in GPT-J each ADJACENT pair of elements in k and q are rotated, in GPT-NeoX the pair of elements at k and k+n//2 are rotated (ie folding the full length in half, and then looking at pairs accordingly). I have absolutely no clue why, it should be completely equivalent.
-        To resolve this, I've coded it to default to the GPT-J mode, but to explicitly check whether it's GPT-NeoX and then do the GPT-NeoX thing if it is.
-        """
+        """Precomputes sin and cos for rotary embeddings"""
         high_precision = torch.float32 if dtype != torch.float64 else torch.float64
-        pos = torch.arange(n_ctx, dtype=high_precision)
-        dim = torch.arange(rotary_dim // 2, dtype=high_precision)
+        pos = torch.arange(n_ctx, dtype=high_precision)  # Positions 0..n_ctx-1
+        dim = torch.arange(rotary_dim // 2, dtype=high_precision)  # Dimensions 0..rotary_dim/2-1
+        freq = base ** (dim / (rotary_dim / 2))  # Frequencies based on base and dimension
 
-        # A set of frequencies evenly spaced in log space
-        freq = base ** (dim / (rotary_dim / 2))
         if self.rotary_adjacent_pairs:
             freq = freq.unsqueeze(1).repeat(1, 2).flatten()
         else:
             freq = freq.repeat(2)
-        # Create a n_ctx x rotary_dim tensor, where each column is an arithmetic sequence of angles in that frequency
+
+        # Calculate angles: (n_ctx, rotary_dim)
         angles = pos[:, None] / freq[None, :]
-        return torch.sin(angles).to(dtype), torch.cos(angles).to(dtype)
+
+        # Calculate sin and cos, cast to desired dtype
+        sin = torch.sin(angles).to(dtype)
+        cos = torch.cos(angles).to(dtype)
+        return sin, cos
 
     def get_offset_position_ids(
         self,
         past_kv_pos_offset: int,
         attention_mask: Int[Tensor, "batch offset_pos"],
-    ) -> Float[Tensor, "pos batch"]:
-        """
-        Returns the indices of non-padded tokens, offset by the position of the first attended token.
-        """
-        # shift the position ids so that the id at the the first attended token position becomes zero.
-        # The position ids of the prepending pad tokens are shifted to -1.
-        shifted_position_ids = attention_mask.cumsum(dim=1) - 1  # [batch, tokens_length]
-
-        # Set the position ids of all prepending pad tokens to an arbitrary number (zero here)
-        # just to avoid indexing errors.
+    ):  # Changed return type hint
+        shifted_position_ids = attention_mask.cumsum(dim=1) - 1
         position_ids = shifted_position_ids.masked_fill(shifted_position_ids < 0, 0)
-        return position_ids[:, past_kv_pos_offset:]  # [pos, batch]
+        return position_ids[:, past_kv_pos_offset:].long()  # Ensure long type for indexing
 
     def rotate_every_two(self, x: Tensor) -> Tensor:
-        """
-        Rotary helper function, splits x into blocks of size 2 along the final axis and maps [x0, x1] to [-x1, x0]
-
-        The final axis of x must have even length.
-
-        GPT-NeoX and GPT-J do rotary subtly differently, see calculate_sin_cos_rotary for details.
-        """
-        rot_x = x.clone()
+        """Rotates pairs of elements in the last dimension (handles adjacent_pairs logic)"""
+        x_rot = x.clone()
         if self.rotary_adjacent_pairs:
-            rot_x[..., ::2] = -x[..., 1::2]
-            rot_x[..., 1::2] = x[..., ::2]
+            x_rot[..., ::2] = -x[..., 1::2]
+            x_rot[..., 1::2] = x[..., ::2]
         else:
-            n = x.size(-1) // 2
-            rot_x[..., :n] = -x[..., n:]
-            rot_x[..., n:] = x[..., :n]
+            n = x.shape[-1] // 2
+            x_rot[..., :n] = -x[..., n:]
+            x_rot[..., n:] = x[..., :n]
+        return x_rot
 
-        return rot_x
-
-    def apply_rotary(
+    def apply_rotary_pos_emb(
         self,
-        x: Float[Tensor, "batch head pos head_size"],
-        past_kv_pos_offset=0,
-        attention_mask: Int[Tensor, "batch offset_pos"] | None = None,
-    ) -> Float[Tensor, "batch head pos head_size"]:
-        # Only apply rotary to first rotary_dim dimensions (eg, if rotary_dim=64 and d_head=256, only apply to first 1/4 of dimensions)
-        x = x.permute(
-            0, 2, 1, 3
-        )  # TODO check if this permutation slows down the function significantly
-        x_pos = x.size(1)
-        x_rot = x[..., : self.rotary_dim]
-        x_pass = x[..., self.rotary_dim :]
-        x_flip = self.rotate_every_two(x_rot)
+        q: Float[Tensor, "batch n_head seq_len head_dim"],
+        k: Float[Tensor, "batch n_kv_head seq_len head_dim"],
+        cos: Float[Tensor, "batch seq_len rotary_dim"],
+        sin: Float[Tensor, "batch seq_len rotary_dim"],
+    ) -> tuple[
+        Float[Tensor, "batch n_head seq_len head_dim"],
+        Float[Tensor, "batch n_kv_head seq_len head_dim"],
+    ]:
+        # Unsqueeze cos/sin for broadcasting: (batch, 1, seq_len, rotary_dim)
+        # This aligns with the head dimension of q and k
+        cos = cos.unsqueeze(1)
+        sin = sin.unsqueeze(1)
 
-        if attention_mask is None:
-            rotary_cos = self.rotary_cos[
-                None, past_kv_pos_offset : past_kv_pos_offset + x_pos, None, :
-            ]
-            rotary_sin = self.rotary_sin[
-                None, past_kv_pos_offset : past_kv_pos_offset + x_pos, None, :
-            ]
-            x_rotated = x_rot * rotary_cos + x_flip * rotary_sin
+        # Select the part of q and k to be rotated
+        q_rot = q[..., : self.rotary_dim]
+        k_rot = k[..., : self.rotary_dim]
+
+        # Apply rotation using the formula: x_rotated = x * cos + rotate_half(x) * sin
+        # Using self.rotate_every_two to handle standard RoPE and adjacent pairs logic
+        q_rotated = (q_rot * cos) + (self.rotate_every_two(q_rot) * sin)
+        k_rotated = (k_rot * cos) + (self.rotate_every_two(k_rot) * sin)
+
+        # If rotary_dim is less than head_dim, combine rotated part with the non-rotated part
+        if self.rotary_dim < self.head_dim:
+            q_pass = q[..., self.rotary_dim :]
+            k_pass = k[..., self.rotary_dim :]
+            q_embed = torch.cat((q_rotated, q_pass), dim=-1)
+            k_embed = torch.cat((k_rotated, k_pass), dim=-1)
         else:
-            offset_position_ids = self.get_offset_position_ids(past_kv_pos_offset, attention_mask)
-            offset_position_ids = offset_position_ids.to(self.rotary_cos.device)
-            mask_rotary_cos = self.rotary_cos[offset_position_ids, None, :]
-            mask_rotary_sin = self.rotary_sin[offset_position_ids, None, :]
-            x_rotated = x_rot * mask_rotary_cos + x_flip * mask_rotary_sin
-        out = x_rotated
-        return out.permute(0, 2, 1, 3)
+            q_embed = q_rotated
+            k_embed = k_rotated
+
+        return q_embed.to(q.dtype), k_embed.to(k.dtype)  # Ensure original dtype
 
     def forward(
         self,
         x: Float[Tensor, "batch pos d_model"],
         attention_mask: Int[Tensor, "batch offset_pos"] | None = None,
+        position_ids=None,
+        past_key_value: tuple[Tensor, Tensor] | None = None,
     ) -> Float[Tensor, "batch pos d_model"]:
-        B, T, C = x.size()  # batch size, sequence length, embedding dimensionality (n_embd)
+        B, T, C = x.size()  # Batch size, Sequence length, Embedding dimension
 
         if self.use_grouped_query_attention:
-            # calculate query, key, values for all heads in batch and move head forward to be the batch dim
-            k, v = self.kv_attn(x).split(self.n_embd // self.repeat_kv_heads, dim=2)
-            q = self.q_attn(x)
-            assert k.shape[-1] == v.shape[-1] == q.shape[-1] // self.repeat_kv_heads
+            q = self.q_attn(x)  # (B, T, C)
+            kv = self.kv_attn(x)  # (B, T, 2 * n_kv_heads * head_dim)
+            # Split K and V
+            k, v = kv.split(self.n_key_value_heads * self.head_dim, dim=2)
+            # Reshape for multi-head attention
+            q = q.view(B, T, self.n_head, self.head_dim).transpose(1, 2)  # (B, n_head, T, head_dim)
+            k = k.view(B, T, self.n_key_value_heads, self.head_dim).transpose(
+                1, 2
+            )  # (B, n_kv_heads, T, head_dim)
+            v = v.view(B, T, self.n_key_value_heads, self.head_dim).transpose(
+                1, 2
+            )  # (B, n_kv_heads, T, head_dim)
+        else:
+            # Standard MHA: Compute Q, K, V from combined projection
+            qkv = self.c_attn(x)  # (B, T, 3*C)
+            q, k, v = qkv.split(self.n_embd, dim=2)  # (B, T, C) each
+            # Reshape for multi-head attention
+            q = q.view(B, T, self.n_head, self.head_dim).transpose(1, 2)  # (B, n_head, T, head_dim)
+            k = k.view(B, T, self.n_head, self.head_dim).transpose(1, 2)  # (B, n_head, T, head_dim)
+            v = v.view(B, T, self.n_head, self.head_dim).transpose(1, 2)  # (B, n_head, T, head_dim)
 
-            # Repeat k and v for each head
+        past_kv_pos_offset = 0  # TODO: Handle this properly if implementing KV caching
+        if position_ids is None:
+            if attention_mask is not None:
+                # Derive position IDs from attention mask for the current sequence part
+                position_ids = self.get_offset_position_ids(
+                    past_kv_pos_offset, attention_mask
+                )  # (B, T)
+            else:
+                # Assume sequential positions if no mask/ids provided
+                position_ids = torch.arange(
+                    past_kv_pos_offset, past_kv_pos_offset + T, dtype=torch.long, device=x.device
+                ).unsqueeze(0)  # (1, T) -> broadcasts to (B, T)
+        else:
+            # Use provided position_ids, selecting the relevant part
+            position_ids = position_ids[:, past_kv_pos_offset : past_kv_pos_offset + T]
+
+        position_ids = position_ids.clamp(max=self.n_ctx - 1)
+
+        cos = self.rotary_cos[position_ids].to(q.dtype)
+        sin = self.rotary_sin[position_ids].to(q.dtype)
+
+        q, k = self.apply_rotary_pos_emb(q, k, cos, sin)
+
+        # Repeat K/V heads if using Grouped Query Attention
+        if self.use_grouped_query_attention and self.repeat_kv_heads > 1:
             k = k.repeat_interleave(self.repeat_kv_heads, dim=1)
             v = v.repeat_interleave(self.repeat_kv_heads, dim=1)
-        else:
-            qkv = self.c_attn(x)
-            q, k, v = qkv.split(self.n_embd, dim=2)
 
-        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
-        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
-        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
-
-        q = self.apply_rotary(q, 0, attention_mask)
-        k = self.apply_rotary(k, 0, attention_mask)  # keys are cached so no offset
-
-        if self.n_key_value_heads < self.n_head:
-            # Repeat k and v along the head dimension to match n_head
-            k = k[:, :self.n_key_value_heads, :, :]
-            v = v[:, :self.n_key_value_heads, :, :]
-            # Repeat to fill the remaining dimensions
-            repeat_factor = self.n_head // self.n_key_value_heads
-            k = k.repeat_interleave(repeat_factor, dim=1)
-            v = v.repeat_interleave(repeat_factor, dim=1)
-        
         if self.flash_attention:
-            # flashattention
-            y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+            y = F.scaled_dot_product_attention(
+                q, k, v, attn_mask=None, dropout_p=0.0, is_causal=True
+            )
         else:
-            # manual implementation of attention
-            # this materializes the large (T,T) matrix for all the queries and keys
+            # Manual attention calculation
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
             att = att.masked_fill(self.bias[:, :, :T, :T] == 0, float("-inf"))
             att = F.softmax(att, dim=-1)
-            y = att @ v  # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
-        
-        y = (
-            y.transpose(1, 2).contiguous().view(B, T, C)
-        )  # re-assemble all head outputs side by side
-        # output projection
-        y = self.c_proj(y)
-        
+            y = att @ v  # (B, n_head, T, head_dim)
+
+        y = y.transpose(1, 2).contiguous().view(B, T, C)  # (B, T, C)
+        y = self.c_proj(y)  # (B, T, C)
+
         return y
 
 
@@ -283,7 +287,6 @@ class Llama(nn.Module):
     def __init__(self, config: LlamaConfig):
         super().__init__()
         self.config = config
-
         self.transformer = nn.ModuleDict(
             dict(
                 wte=nn.Embedding(config.vocab_size, config.n_embd),
@@ -292,31 +295,23 @@ class Llama(nn.Module):
             )
         )
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
-        # don't init this one, we will tie weights
-        self.lm_head.LLMC_SKIP_INIT = 1  # type:ignore
-        self.transformer.wte.weight = (
-            self.lm_head.weight
-        )  # https://paperswithcode.com/method/weight-tying
-
-        # init all weights, use a torch rng object to be very careful
+        self.lm_head.LLMC_SKIP_INIT = 1
+        self.transformer.wte.weight = self.lm_head.weight
         self.init_rng = torch.Generator()
         self.init_rng.manual_seed(42)
         self.apply(self._init_weights)
 
     def _init_weights(self, module: nn.Module):
         if isinstance(module, nn.Linear):
-            # apply special scaled init to the residual projections, per GPT-2 paper
             std = (
                 0.02
                 if not hasattr(module, "LLMC_RESIDUAL_SCALE_FLAG")
                 else 0.02 / math.sqrt(2 * self.config.n_layer)
             )
-            # we want to skip initializing lm_head, which shares parameters with wte
-            # and wte was already initialized down below during the Embedding init
             if not hasattr(module, "LLMC_SKIP_INIT"):
                 torch.nn.init.normal_(module.weight, mean=0.0, std=std, generator=self.init_rng)
-            if module.bias is not None:  # type: ignore
-                torch.nn.init.zeros_(module.bias)
+                if module.bias is not None:
+                    torch.nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02, generator=self.init_rng)
 
@@ -331,30 +326,76 @@ class Llama(nn.Module):
         assert (
             t <= self.config.block_size
         ), f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
-
-        # forward the model itself
-        tok_emb = self.transformer.wte(idx)  # token embeddings of shape (b, t, n_embd)
-        # x = tok_emb + pos_emb
+        tok_emb = self.transformer.wte(idx)
         x = tok_emb
-
         for block in self.transformer.h:
             x = block(x)
         x = self.transformer.rms_f(x)
-
         logits = self.lm_head(x)
         loss = None
         if targets is not None:
-            # if we are given some desired targets also calculate the loss
             targets = targets.long()
             loss = F.cross_entropy(
                 logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1
             )
-
-        # there are performance reasons why not returning logits is prudent, if not needed
         if not return_logits:
             logits = None
-
         return logits, loss
+
+    @classmethod
+    def from_pretrained(
+        cls, model_path_or_id: str, config: LlamaConfig, strict: bool = True
+    ) -> "Llama":
+        model = cls(config)
+        is_local = os.path.exists(model_path_or_id)
+        if is_local:
+            state_dict = torch.load(model_path_or_id, weights_only=True, map_location="cpu")
+        else:
+            try:
+                weights_path = hf_hub_download(
+                    repo_id=model_path_or_id, filename="model.safetensors"
+                )
+                state_dict = load_file(weights_path)
+                converted_state_dict = {}
+                for k, v in state_dict.items():
+                    k = k.replace("llama.", "")
+                    if k == "lm_head.weight":
+                        converted_state_dict["lm_head.weight"] = v
+                        converted_state_dict["transformer.wte.weight"] = v
+                    else:
+                        converted_state_dict[k] = v
+                state_dict = converted_state_dict
+            except Exception as err:
+                raise ValueError(
+                    f"Error loading model from HuggingFace Hub: {str(err)}. "
+                    f"Please ensure the model path or ID '{model_path_or_id}' is correct."
+                ) from err
+
+        state_dict = {k.replace("_orig_mod.", ""): v for k, v in state_dict.items()}
+
+        # Remove rotary_sin and rotary_cos from state_dict to regenerate them
+        keys_to_remove = [
+            k for k in state_dict.keys() if k.endswith("rotary_sin") or k.endswith("rotary_cos")
+        ]
+        for k in keys_to_remove:
+            state_dict.pop(k)
+
+        # Load state dict (ignoring rotary buffers)
+        model.load_state_dict(state_dict, strict=False)
+
+        # Regenerate rotary_sin and rotary_cos for each attention layer
+        for layer_idx, block in enumerate(model.transformer.h):
+            attn = block.attn
+            sin, cos = attn.calculate_sin_cos_rotary(
+                rotary_dim=attn.rotary_dim,
+                n_ctx=attn.n_ctx,
+                base=attn.rotary_base,
+                dtype=attn.rotary_cos.dtype if hasattr(attn, "rotary_cos") else torch.float32,
+            )
+            attn.register_buffer("rotary_sin", sin)
+            attn.register_buffer("rotary_cos", cos)
+
+        return model
 
     def configure_optimizers(
         self,
@@ -478,60 +519,3 @@ class Llama(nn.Module):
             idx = idx.squeeze(0)
 
         return idx
-
-    @classmethod
-    def from_pretrained(
-        cls, model_path_or_id: str, config: LlamaConfig, strict: bool = True
-    ) -> "Llama":
-        """
-        Load a model either from a local checkpoint or from HuggingFace Hub.
-
-        Args:
-            model_path_or_id: Path to local checkpoint or HuggingFace model ID
-            config: model configuration
-            strict: Whether to strictly enforce matching keys in state dict
-        Returns:
-            Loaded model instance into CPU
-        """
-        model = cls(config)
-
-        # Determine if path is local file or HuggingFace ID
-        is_local = os.path.exists(model_path_or_id)
-        if is_local:
-            state_dict = torch.load(model_path_or_id, weights_only=True, map_location="cpu")
-
-        else:
-            # Load from HuggingFace Hub
-            try:
-                weights_path = hf_hub_download(
-                    repo_id=model_path_or_id, filename="model.safetensors"
-                )
-                # loads the model file into CPU by default
-                state_dict = load_file(weights_path)
-
-                # Convert HuggingFace state dict format
-                converted_state_dict = {}
-                for k, v in state_dict.items():
-                    # Remove 'llama.' prefix if present
-                    k = k.replace("llama.", "")
-
-                    # Handle special case for lm_head/wte weight tying
-                    if k == "lm_head.weight":
-                        converted_state_dict["lm_head.weight"] = v
-                        converted_state_dict["transformer.wte.weight"] = v
-                    else:
-                        converted_state_dict[k] = v
-                state_dict = converted_state_dict
-
-            except Exception as err:
-                raise ValueError(
-                    f"Error loading model from HuggingFace Hub: {str(err)}. "
-                    f"Please ensure the model path or ID '{model_path_or_id}' is correct."
-                ) from err
-
-        # Clean up state dict keys if needed
-        state_dict = {k.replace("_orig_mod.", ""): v for k, v in state_dict.items()}
-
-        # Load state dict
-        model.load_state_dict(state_dict, strict=strict)
-        return model

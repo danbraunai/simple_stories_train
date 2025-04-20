@@ -8,20 +8,20 @@ from transformers import AutoTokenizer, LlamaConfig, LlamaForCausalLM
 from simple_stories_train.models.llama import Llama
 from simple_stories_train.models.model_configs import MODEL_CONFIGS
 
-MODEL_SIZE = "35M"
+MODEL_SIZE = "11M"
 model_config = MODEL_CONFIGS[MODEL_SIZE]
 custom_model = Llama.from_pretrained(f"chandan-sreedhara/SimpleStories-{MODEL_SIZE}", model_config)
-
+print(model_config.rotary_dim)
 # Create a matching HuggingFace configuration
 hf_config = LlamaConfig(
-    vocab_size=model_config.vocab_size, 
+    vocab_size=model_config.vocab_size,
     hidden_size=model_config.n_embd,
-    intermediate_size=model_config.n_intermediate,  
+    intermediate_size=model_config.n_intermediate,
     num_hidden_layers=model_config.n_layer,
     num_attention_heads=model_config.n_head,
     num_key_value_heads=model_config.n_key_value_heads,
-    hidden_act="silu", 
-    max_position_embeddings=2048, 
+    max_position_embeddings=model_config.rotary_dim,
+    hidden_act="silu",
     rms_norm_eps=1e-06,
     tie_word_embeddings=True,
 )
@@ -96,18 +96,26 @@ inputs = tokenizer(prompt, return_tensors="pt", add_special_tokens=False)
 # IMPORTANT: Set correct EOS token ID (not the default from tokenizer)
 eos_token_id = 1
 
-for name, i, model in zip(["custom", "hf"], ["idx", "input_ids"], [custom_model, hf_model], strict=False):
+logits_dict = {}
+for name, i, model in zip(
+    ["custom", "hf"], ["idx", "input_ids"], [custom_model, hf_model], strict=False
+):
     # Generate text
     print(f"Generating text with {name} model...")
     try:
         with torch.no_grad():
-            logits = model.forward(
-                **{i: inputs.input_ids}
-            )
+            logits = model.forward(**{i: inputs.input_ids})
     except Exception as e:
         print(f"Error generating text with {name} model: {e}")
         continue
-    print(f"Logits:\n{logits}")
+    logits_dict[i] = logits
+
+
+assert torch.allclose(
+    logits_dict["idx"][0],
+    logits_dict["input_ids"][0],
+    atol=1e-4,
+)
 
 # Testing original vs. copied model
 for i, model in zip(["input_ids", "idx"], [hf_model, custom_model], strict=False):
