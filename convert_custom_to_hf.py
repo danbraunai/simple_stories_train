@@ -8,10 +8,13 @@ from transformers import AutoTokenizer, LlamaConfig, LlamaForCausalLM
 from simple_stories_train.models.llama import Llama
 from simple_stories_train.models.model_configs import MODEL_CONFIGS
 
-MODEL_SIZE = "11M"
+MODEL_SIZE = "5M"
 model_config = MODEL_CONFIGS[MODEL_SIZE]
-custom_model = Llama.from_pretrained(f"chandan-sreedhara/SimpleStories-{MODEL_SIZE}", model_config)
-print(model_config.rotary_dim)
+custom_model = Llama.from_pretrained(
+    "/home/chandan/research/simple_stories_research/output_21-04-2025/SimpleStories-5M/model_step_59999.pt", 
+    model_config
+)
+
 # Create a matching HuggingFace configuration
 hf_config = LlamaConfig(
     vocab_size=model_config.vocab_size,
@@ -117,18 +120,36 @@ assert torch.allclose(
     atol=1e-4,
 )
 
-# Testing original vs. copied model
-for i, model in zip(["input_ids", "idx"], [hf_model, custom_model], strict=False):
-    # Generate text
-    with torch.no_grad():
-        output_ids = model.generate(
-            **{i: inputs.input_ids},
-            max_new_tokens=800,
-            temperature=0.0,
-            top_k=40,
-            eos_token_id=eos_token_id,
-        )
+# Note: Generation  might be different since RNG in HF implementation could be different. We are mainly
+# looking for coherent response and similar quality response.
 
-    # Decode output
-    output_text = tokenizer.decode(output_ids[0], skip_special_tokens=True)
-    print(f"Generated text:\n{output_text}")
+# Testing HuggingFace model
+with torch.no_grad():
+    # Set seed for reproducibility
+    torch.manual_seed(42)
+    hf_output_ids = hf_model.generate(
+        input_ids=inputs.input_ids,
+        max_new_tokens=800,
+        temperature=0.7,
+        do_sample=True,  # Add this to match custom model behavior
+        eos_token_id=eos_token_id,
+    )
+
+# Decode HF model output
+hf_output_text = tokenizer.decode(hf_output_ids[0], skip_special_tokens=True)
+print(f"Generated text from HuggingFace model:\n{hf_output_text}")
+
+# Testing custom model
+with torch.no_grad():
+    # Reset seed for identical results
+    torch.manual_seed(42)
+    custom_output_ids = custom_model.generate(
+        idx=inputs.input_ids,
+        max_new_tokens=800,
+        temperature=0.7,
+        eos_token_id=eos_token_id,
+    )
+
+# Decode custom model output
+custom_output_text = tokenizer.decode(custom_output_ids[0], skip_special_tokens=True)
+print(f"Generated text from custom model:\n{custom_output_text}")
