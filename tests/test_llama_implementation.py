@@ -70,8 +70,10 @@ def test_rotary_embedding_implementation() -> None:
     custom_cos = custom_implementation.rotary_cos[position_ids].to(q_custom.dtype)
     custom_sin = custom_implementation.rotary_sin[position_ids].to(q_custom.dtype)
 
-    q_custom_rot, k_custom_rot = custom_implementation.apply_rotary_pos_emb(q_custom, k_custom, custom_cos, custom_sin)
-    
+    q_custom_rot, k_custom_rot = custom_implementation.apply_rotary_pos_emb(
+        q_custom, k_custom, custom_cos, custom_sin
+    )
+
     torch.testing.assert_close(
         q_hf_rot, q_custom_rot, msg="Rotated queries don't match between implementation"
     )
