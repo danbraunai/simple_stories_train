@@ -60,8 +60,8 @@ class CausalSelfAttention(nn.Module):
             self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, bias=config.attn_bias)
 
         self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=config.attn_bias)
-        self.c_proj.LLMC_RESIDUAL_SCALE_FLAG = 1
 
+        self.c_proj.register_buffer("LLMC_RESIDUAL_SCALE_FLAG", torch.tensor(1, dtype=torch.int))
         self.register_buffer(
             "bias",
             torch.tril(torch.ones(config.block_size, config.block_size)).view(
@@ -160,7 +160,7 @@ class CausalSelfAttention(nn.Module):
         self,
         x: Float[Tensor, "batch pos d_model"],
         attention_mask: Int[Tensor, "batch offset_pos"] | None = None,
-        position_ids=None,
+        position_ids: Tensor | None = None,
         past_key_value: tuple[Tensor, Tensor] | None = None,
     ) -> Float[Tensor, "batch pos d_model"]:
         B, T, C = x.size()  # Batch size, Sequence length, Embedding dimension
@@ -295,7 +295,8 @@ class Llama(nn.Module):
             )
         )
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
-        self.lm_head.LLMC_SKIP_INIT = 1
+        self.lm_head.register_buffer("LLMC_SKIP_INIT", torch.tensor(1, dtype=torch.int))
+
         self.transformer.wte.weight = self.lm_head.weight
         self.init_rng = torch.Generator()
         self.init_rng.manual_seed(42)
@@ -323,9 +324,9 @@ class Llama(nn.Module):
     ) -> tuple[Float[Tensor, "batch pos"] | None, Float[Tensor, ""] | None]:
         device = idx.device
         b, t = idx.size()
-        assert (
-            t <= self.config.block_size
-        ), f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
+        assert t <= self.config.block_size, (
+            f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
+        )
         tok_emb = self.transformer.wte(idx)
         x = tok_emb
         for block in self.transformer.h:
